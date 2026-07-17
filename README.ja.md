@@ -2,7 +2,7 @@
 
 [English](./README.md)
 
-[![CI](https://github.com/curry-battle/rhf-zod-form-with-multiple-images/actions/workflows/e2e.yml/badge.svg)](https://github.com/curry-battle/rhf-zod-form-with-multiple-images/actions/workflows/e2e.yml)
+[![CI](https://github.com/curry-battle/react-multiple-image-form-manager/actions/workflows/e2e.yml/badge.svg)](https://github.com/curry-battle/react-multiple-image-form-manager/actions/workflows/e2e.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 React 向けのヘッドレスな複数画像管理ライブラリ。追加・削除・並べ替え・差し替えをバリデーションとプレビューURL管理付きで提供します。
