@@ -1,0 +1,26 @@
+{
+	"name": "rhf-multiple-image-form-manager-workspace",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@10.33.0",
+	"scripts": {
+		"build": "pnpm --filter @curry-battle/react-multiple-image-form-manager run build",
+		"test": "pnpm --filter @curry-battle/react-multiple-image-form-manager run test",
+		"typecheck": "pnpm --filter @curry-battle/react-multiple-image-form-manager run typecheck && pnpm --filter example-profile-form run typecheck && pnpm --filter example-profile-form-tanstack run typecheck && tsc -p e2e/tsconfig.json --noEmit",
+		"check": "biome check --write",
+		"check:ci": "biome check",
+		"dev:example:rhf": "pnpm --filter example-profile-form run dev",
+		"dev:example:tanstack": "pnpm --filter example-profile-form-tanstack run dev",
+		"test:e2e": "playwright test",
+		"test:e2e:rhf": "playwright test --project=rhf",
+		"test:e2e:tanstack": "playwright test --project=tanstack",
+		"test:e2e:ui": "playwright test --ui",
+		"test:e2e:install": "playwright install --with-deps chromium"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.2",
+		"@playwright/test": "1.58.2",
+		"@types/node": "^24.6.0",
+		"typescript": "~7.0.2"
+	}
+}
