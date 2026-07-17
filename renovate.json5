@@ -25,15 +25,10 @@
   automerge: false,
 
   packageRules: [
-    {
-      description: "Major updates get a longer cooldown",
-      matchUpdateTypes: ["major"],
-      minimumReleaseAge: "14 days",
-    },
-    {
-      description: "Pin @types/node to match runtime Node major (22)",
+{
+      description: "Pin @types/node to match runtime Node major (24)",
       matchPackageNames: ["@types/node"],
-      allowedVersions: "<23",
+      allowedVersions: "<25",
     },
     {
       description: "GitHub Actions must stay SHA-pinned",
