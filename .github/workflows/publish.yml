@@ -1,8 +1,7 @@
 name: Publish Package
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -42,3 +41,15 @@ jobs:
           pnpm --filter @curry-battle/react-multiple-image-form-manager publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update draft release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="v$(node -p "require('./packages/react-multiple-image-form-manager/package.json').version")"
+          DRAFT_ID=$(gh release list --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | head -n 1)
+          if [ -n "$DRAFT_ID" ]; then
+            gh release edit "$DRAFT_ID" --tag "$VERSION" --title "$VERSION"
+          else
+            gh release create "$VERSION" --draft --generate-notes --target "$GITHUB_SHA"
+          fi
