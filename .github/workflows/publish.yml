@@ -13,11 +13,14 @@ jobs:
 
   publish:
     needs: ci
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
       packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -35,6 +38,10 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      - name: Determine version
+        id: version
+        run: echo "version=v$(node -p "require('./packages/react-multiple-image-form-manager/package.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: Publish
         run: |
           echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> .npmrc
@@ -42,14 +49,22 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  update-draft:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
       - name: Update draft release tag
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.publish.outputs.version }}
         run: |
-          VERSION="v$(node -p "require('./packages/react-multiple-image-form-manager/package.json').version")"
-          DRAFT_ID=$(gh release list --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | head -n 1)
-          if [ -n "$DRAFT_ID" ]; then
-            gh release edit "$DRAFT_ID" --tag "$VERSION" --title "$VERSION"
+          set -euo pipefail
+          DRAFT_TAG=$(gh release list --json tagName,isDraft --jq '[.[] | select(.isDraft)] | .[0].tagName // empty')
+          if [ -n "$DRAFT_TAG" ]; then
+            gh release edit "$DRAFT_TAG" --tag "$VERSION" --title "$VERSION" --target "$GITHUB_SHA"
           else
             gh release create "$VERSION" --draft --generate-notes --target "$GITHUB_SHA"
           fi
