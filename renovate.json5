@@ -6,6 +6,18 @@
     "helpers:pinGitHubActionDigests",
   ],
 
+  // config:recommended includes **/examples/** in ignorePaths;
+  // override to let Renovate track example app dependencies.
+  ignorePaths: [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/__tests__/**",
+    "**/test/**",
+    "**/fixtures/**",
+    "**/__fixtures__/**",
+  ],
+
   mode: "full",
   dependencyDashboard: true,
   configMigration: true,
