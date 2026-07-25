@@ -1,11 +1,11 @@
 # react-multiple-image-form-manager
 
-[日本語](./README.ja.md)
-
-[![CI](https://github.com/curry-battle/react-multiple-image-form-manager/actions/workflows/e2e.yml/badge.svg)](https://github.com/curry-battle/react-multiple-image-form-manager/actions/workflows/e2e.yml)
+[![CI](https://github.com/curry-battle/react-multiple-image-form-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/curry-battle/react-multiple-image-form-manager/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 Headless React library for managing multiple images — add, delete, reorder, and replace — with built-in validation and preview URL handling.
+
+[日本語](./README.ja.md)
 
 Supports **React Hook Form** and **TanStack Form**, with optional **Zod** / **Valibot** schema integration.
 
