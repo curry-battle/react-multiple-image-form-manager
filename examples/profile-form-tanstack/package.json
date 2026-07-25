@@ -16,7 +16,7 @@
 		"react": "^19.1.1",
 		"react-dom": "^19.1.1",
 		"uuid": "13.0.0",
-		"valibot": "1.2.0"
+		"valibot": "1.4.2"
 	},
 	"devDependencies": {
 		"@types/react": "^19.1.16",

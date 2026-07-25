@@ -45,8 +45,8 @@ importers:
         specifier: 13.0.0
         version: 13.0.0
       valibot:
-        specifier: 1.2.0
-        version: 1.2.0(typescript@7.0.2)
+        specifier: 1.4.2
+        version: 1.4.2(typescript@7.0.2)
       zod:
         specifier: 4.1.12
         version: 4.1.12
@@ -88,8 +88,8 @@ importers:
         specifier: 13.0.0
         version: 13.0.0
       valibot:
-        specifier: 1.2.0
-        version: 1.2.0(typescript@7.0.2)
+        specifier: 1.4.2
+        version: 1.4.2(typescript@7.0.2)
     devDependencies:
       '@types/react':
         specifier: ^19.1.16
@@ -146,8 +146,8 @@ importers:
         specifier: ~7.0.2
         version: 7.0.2
       valibot:
-        specifier: 1.2.0
-        version: 1.2.0(typescript@7.0.2)
+        specifier: 1.4.2
+        version: 1.4.2(typescript@7.0.2)
       vitest:
         specifier: 4.1.10
         version: 4.1.10(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10)(vite@8.1.5(@types/node@24.13.3)(jiti@2.7.0))
@@ -1192,8 +1192,8 @@ packages:
     resolution: {integrity: sha512-XQegIaBTVUjSHliKqcnFqYypAd4S+WCYt5NIeRs6w/UAry7z8Y9j5ZwRRL4kzq9U3sD6v+85er9FvkEaBpji2w==}
     hasBin: true
 
-  valibot@1.2.0:
-    resolution: {integrity: sha512-mm1rxUsmOxzrwnX5arGS+U4T25RdvpPjPN4yR0u9pUBov9+zGVtO84tif1eY4r6zWxVxu3KzIyknJy3rxfRZZg==}
+  valibot@1.4.2:
+    resolution: {integrity: sha512-gjdCvJ6d3RyHAneqxMYMW9QMCwYMb3jpOO0IyHZV1bnRHFBHrX3VkIILt5XYR0WhwHiH7Mty8ovuPZ/O3gamrg==}
     peerDependencies:
       typescript: '>=5'
     peerDependenciesMeta:
@@ -2097,7 +2097,7 @@ snapshots:
 
   uuid@13.0.0: {}
 
-  valibot@1.2.0(typescript@7.0.2):
+  valibot@1.4.2(typescript@7.0.2):
     optionalDependencies:
       typescript: 7.0.2
 
