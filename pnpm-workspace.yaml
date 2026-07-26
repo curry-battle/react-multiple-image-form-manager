@@ -8,7 +8,9 @@ minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
   [
     # Renovate security update: valibot@1.4.2
-    valibot@1.4.2
+    valibot@1.4.2,
+    # Renovate security update: uuid@13.0.1
+    uuid@13.0.1
   ]
 
 blockExoticSubdeps: true
