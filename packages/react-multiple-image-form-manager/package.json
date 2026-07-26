@@ -92,8 +92,8 @@
 	},
 	"devDependencies": {
 		"@hookform/resolvers": "5.4.0",
-		"@tanstack/form-core": "1.33.1",
-		"@tanstack/react-form": "1.33.1",
+		"@tanstack/form-core": "1.33.2",
+		"@tanstack/react-form": "1.33.2",
 		"@types/react": "^19.1.16",
 		"@vitejs/plugin-react": "^6.0.3",
 		"@vitest/browser": "4.1.10",
