@@ -5,18 +5,18 @@ import type {
 	FormWithImageField,
 } from "../core/types/ImageSchemaTypes";
 import type { MultiImageError } from "../core/types/MultiImageError";
-import { useMultiImageCore } from "../core/useMultiImageCore";
 import type {
-	UseTanstackImageFieldAdapterParams,
-	ValidateCause,
-} from "./useTanstackImageFieldAdapter";
+	UseMultiImageCoreReturn,
+	UseMultiImageCoreUploadedReturn,
+} from "../core/useMultiImageCore";
+import { useMultiImageCore } from "../core/useMultiImageCore";
+import type { UseTanstackImageFieldAdapterParams } from "./useTanstackImageFieldAdapter";
 import { useTanstackImageFieldAdapter } from "./useTanstackImageFieldAdapter";
 
 export type UseTanstackMultiImageControllerParams<
 	TFieldName extends string,
 	TFormData extends FormWithImageField<TFieldName>,
 > = UseTanstackImageFieldAdapterParams<TFieldName, TFormData> & {
-	validateCause?: ValidateCause;
 	processFile?: ProcessFileFn;
 	uploadFile?: UploadFileFn;
 	onError?: (error: MultiImageError) => void;
@@ -25,16 +25,31 @@ export type UseTanstackMultiImageControllerParams<
 };
 
 /**
- * Convenience hook for TanStack Form. Call inside a React component rendered
- * as children of `<form.Field mode="array">` (rules-of-hooks).
+ * Convenience hook for TanStack Form. Call it at form level so that `uploads` is
+ * reachable from the submit handler.
  */
 export function useTanstackMultiImageController<
 	TFieldName extends string,
 	TFormData extends FormWithImageField<TFieldName>,
->(params: UseTanstackMultiImageControllerParams<TFieldName, TFormData>) {
+>(
+	params: UseTanstackMultiImageControllerParams<TFieldName, TFormData> & {
+		uploadFile: UploadFileFn;
+	},
+): UseMultiImageCoreUploadedReturn;
+export function useTanstackMultiImageController<
+	TFieldName extends string,
+	TFormData extends FormWithImageField<TFieldName>,
+>(
+	params: UseTanstackMultiImageControllerParams<TFieldName, TFormData>,
+): UseMultiImageCoreReturn;
+export function useTanstackMultiImageController<
+	TFieldName extends string,
+	TFormData extends FormWithImageField<TFieldName>,
+>(
+	params: UseTanstackMultiImageControllerParams<TFieldName, TFormData>,
+): UseMultiImageCoreUploadedReturn {
 	const {
 		form,
-		field,
 		name,
 		validateCause,
 		processFile,
@@ -46,12 +61,11 @@ export function useTanstackMultiImageController<
 
 	const adapter = useTanstackImageFieldAdapter<TFieldName, TFormData>({
 		form,
-		field,
 		name,
 		validateCause,
 	});
 
-	const { itemsWithErrors, rootErrors, handlers, raw } = useMultiImageCore({
+	const core = useMultiImageCore({
 		adapter,
 		processFile,
 		uploadFile,
@@ -60,5 +74,7 @@ export function useTanstackMultiImageController<
 		messages,
 	});
 
-	return { itemsWithErrors, rootErrors, handlers, raw } as const;
+	// uploadFile の有無は呼び出し側のオーバーロードで解決済み。実体は同じなので
+	// 参照ごと通す（useMultiImageInputController と同じ理由）
+	return core as UseMultiImageCoreUploadedReturn;
 }

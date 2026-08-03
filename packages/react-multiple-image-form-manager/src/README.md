@@ -50,7 +50,7 @@ Hexagonal Architecture (Ports & Adapters) を採用:
 ```
 
 ToBeDeleted は配列内の元の位置にそのまま残る。
-消費側（`itemsWithErrors` 等）は `.filter()` で ToBeDeleted を除外して可視アイテムを取得する。
+フックが返す `items` は ToBeDeleted を除外した可視アイテムのみ。`raw.watchedImages` は除外しない。
 
 ## エラーモデル
 

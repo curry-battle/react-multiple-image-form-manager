@@ -5,7 +5,7 @@ import {
 	type MultiImageErrorType,
 	type UploadFileFn,
 } from "@curry-battle/react-multiple-image-form-manager";
-import { TanstackMultiImageController } from "@curry-battle/react-multiple-image-form-manager/tanstack-form";
+import { useTanstackMultiImageController } from "@curry-battle/react-multiple-image-form-manager/tanstack-form";
 import { useForm } from "@tanstack/react-form";
 import type { ChangeEvent } from "react";
 import { API } from "../api/api";
@@ -58,38 +58,63 @@ export function ProfileForm({ initialData }: ProfileFormProps) {
 			file,
 			presignedUrl,
 		);
-		return { uploadedUrl: uploadedImageUrl };
+		// この構成では転送先の参照が S3 の URL そのものになる。
+		// S3 の key や、バックエンドが発行した ID を返す構成もある
+		return { uploadRef: uploadedImageUrl };
+	};
+
+	const { items, handlers, uploads, raw } = useTanstackMultiImageController({
+		form,
+		name: "profileImages",
+		constraints: profileImageConstraints,
+		uploadFile: handleUploadFile,
+		onError: handleImageError,
+	});
+
+	/**
+	 * savedIds は waited.images と同じ並び（可視順）で返る。
+	 * items も可視順なので index で対応づけできる
+	 */
+	const promoteSavedImages = (savedIds: string[]) => {
+		const next = items.map(({ image }, index) => {
+			if (image.status !== ImageFormStatus.New) return image;
+			// wait() が ok を返した時点で new 項目は必ず uploadRef を持つ。
+			// items[].image は表示用の Image なので型の上では optional のまま
+			const { uploadRef } = image;
+			if (uploadRef === undefined) return image;
+			return ImageUtils.markSaved(
+				{ ...image, uploadRef },
+				{
+					id: savedIds[index],
+					// この構成では uploadRef が S3 の URL なので表示にも使える。
+					// 登録 API がトークンを受け取る構成では、そのレスポンスの URL を渡す
+					previewUrl: uploadRef,
+					uploadedUrl: uploadRef,
+				},
+			);
+		});
+		form.setFieldValue("profileImages", next);
 	};
 
 	const onSubmit = async (data: UserProfileFormType) => {
 		const userId = data.id as UUID;
 
 		try {
-			const imagesForSubmit = ImageUtils.computeImagesForSubmit(
-				data.profileImages,
-			);
-			const hasUnfinishedUploads = imagesForSubmit.some(
-				(img) => img.status === ImageFormStatus.New && !img.uploadedUrl,
-			);
-			if (hasUnfinishedUploads) {
-				console.error("アップロードが完了していない画像があります");
+			// 転送中でも保存は押せる。未完の転送はここで待ち合わせる
+			const waited = await uploads.wait();
+			if (!waited.ok) {
+				console.error("アップロードに失敗した画像があります");
 				return;
 			}
-			await API.updateUserProfile(
+			const savedIds = await API.updateUserProfile(
 				userId,
 				data.name,
-				imagesForSubmit.map((img) => {
-					const base = {
-						id: img.id,
-						status: img.status,
-						order: img.order,
-					};
-					if (img.status === ImageFormStatus.New) {
-						return { ...base, uploadedUrl: img.uploadedUrl };
-					}
-					return base;
-				}),
+				waited.images,
+				waited.deletedIds,
 			);
+			// 登録が済んだ new 項目を existing へ昇格させる。やらないと、続けて
+			// もう一度保存したときに同じ画像が新規として再送される
+			promoteSavedImages(savedIds);
 		} catch (error) {
 			console.error("Update failed", error);
 		}
@@ -137,119 +162,98 @@ export function ProfileForm({ initialData }: ProfileFormProps) {
 				</form.Field>
 
 				{/* 画像 */}
-				<TanstackMultiImageController
-					form={form}
-					name="profileImages"
-					constraints={profileImageConstraints}
-					uploadFile={handleUploadFile}
-					onError={handleImageError}
-					render={({
-						itemsWithErrors,
-						handleAdd,
-						handleFileChange,
-						handleDelete,
-						handleMove,
-						raw,
-					}) => {
-						return (
-							<div>
-								<p className="block text-sm font-medium text-gray-700 mb-2">
-									プロフィール画像
-								</p>
+				<div>
+					<p className="block text-sm font-medium text-gray-700 mb-2">
+						プロフィール画像
+					</p>
 
-								<div className="space-y-3">
-									{itemsWithErrors.map((itemWithErrors, index) => {
-										const { image, errors } = itemWithErrors;
-										const error = errors?.file?.message;
+					<div className="space-y-3">
+						{items.map(({ image, errors, uploadState }, index) => (
+							<FormMultiImageItem
+								key={image.tempId}
+								image={image}
+								index={index}
+								onChangeFile={async (e: ChangeEvent<HTMLInputElement>) => {
+									const file = getFileFromChangeEvent(e);
 
-										return (
-											<FormMultiImageItem
-												key={image.tempId}
-												image={image}
-												index={index}
-												onChangeFile={async (
-													e: ChangeEvent<HTMLInputElement>,
-												) => {
-													const file = getFileFromChangeEvent(e);
+									const tempId = e.target.dataset.tempId;
+									if (!tempId)
+										return console.warn("missing tempId on file input");
+									handlers.handleFileChange(tempId, file);
+								}}
+								onDelete={handlers.handleDelete}
+								onMove={handlers.handleMove}
+								isFirst={index === 0}
+								isLast={index === items.length - 1}
+								/* 今回のスキーマではfileフィールドのエラーのみ想定している (ImageSchemaを参照) */
+								error={errors?.file?.message}
+								uploadState={uploadState}
+								onRetry={uploads.retry}
+							/>
+						))}
 
-													const tempId = e.target.dataset.tempId;
-													if (!tempId)
-														return console.warn("missing tempId on file input");
-													handleFileChange(tempId, file);
-												}}
-												onDelete={handleDelete}
-												onMove={handleMove}
-												isFirst={index === 0}
-												isLast={index === itemsWithErrors.length - 1}
-												error={error}
-											/>
-										);
-									})}
-
-									{itemsWithErrors.length === 0 && (
-										<div className="text-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-lg">
-											画像が選択されていません
-										</div>
-									)}
-
-									<div className="mb-4">
-										<input
-											type="file"
-											accept="image/*"
-											onChange={(e: ChangeEvent<HTMLInputElement>) => {
-												const f = getFileFromChangeEvent(e);
-												handleAdd(f);
-												e.target.value = "";
-											}}
-											className="hidden"
-											id={`imageUpload-profileImages`}
-										/>
-										<div className="flex justify-center">
-											<label
-												htmlFor={`imageUpload-profileImages`}
-												className="flex items-center justify-center w-12 h-12  hover:rounded-full bg-white hover:bg-blue-50 cursor-pointer"
-											>
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													fill="none"
-													viewBox="0 0 24 24"
-													strokeWidth={2}
-													stroke="currentColor"
-													className="w-6 h-6 text-blue-600"
-												>
-													<title>画像追加アイコン</title>
-													<circle
-														cx="12"
-														cy="12"
-														r="11"
-														stroke="currentColor"
-														strokeWidth="2"
-														fill="none"
-													/>
-													<path
-														stroke="currentColor"
-														strokeWidth="2"
-														strokeLinecap="round"
-														d="M12 8v8M8 12h8"
-													/>
-												</svg>
-											</label>
-										</div>
-									</div>
-
-									<div className="mt-8">
-										<p className="block text-sm font-medium text-gray-700 mb-2">
-											画像の状態
-										</p>
-										<pre className="bg-gray-100 rounded p-4 text-xs overflow-x-auto border border-gray-300">
-											{JSON.stringify(raw.watchedImages, null, 2)}
-										</pre>
-									</div>
-								</div>
+						{items.length === 0 && (
+							<div className="text-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-lg">
+								画像が選択されていません
 							</div>
-						);
-					}}
-				/>
+						)}
+
+						<div className="mb-4">
+							<input
+								type="file"
+								accept="image/*"
+								onChange={(e: ChangeEvent<HTMLInputElement>) => {
+									const f = getFileFromChangeEvent(e);
+									handlers.handleAdd(f);
+									// 同じファイルを再選択してもonChangeが発火するようvalueをリセット
+									e.target.value = "";
+								}}
+								className="hidden"
+								id={`imageUpload-profileImages`}
+							/>
+							<div className="flex justify-center">
+								<label
+									htmlFor={`imageUpload-profileImages`}
+									className="flex items-center justify-center w-12 h-12  hover:rounded-full bg-white hover:bg-blue-50 cursor-pointer"
+								>
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										fill="none"
+										viewBox="0 0 24 24"
+										strokeWidth={2}
+										stroke="currentColor"
+										className="w-6 h-6 text-blue-600"
+									>
+										<title>画像追加アイコン</title>
+										<circle
+											cx="12"
+											cy="12"
+											r="11"
+											stroke="currentColor"
+											strokeWidth="2"
+											fill="none"
+										/>
+										<path
+											stroke="currentColor"
+											strokeWidth="2"
+											strokeLinecap="round"
+											d="M12 8v8M8 12h8"
+										/>
+									</svg>
+								</label>
+							</div>
+						</div>
+
+						<div className="mt-8">
+							<p className="block text-sm font-medium text-gray-700 mb-2">
+								画像の状態
+							</p>
+							<pre className="bg-gray-100 rounded p-4 text-xs overflow-x-auto border border-gray-300">
+								{JSON.stringify(raw.watchedImages, null, 2)}
+							</pre>
+						</div>
+					</div>
+				</div>
 
 				{/* 保存ボタン */}
 				<div className="pt-4">

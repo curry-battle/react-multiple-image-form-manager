@@ -6,14 +6,17 @@ import type {
 	FormWithImageField,
 } from "../core/types/ImageSchemaTypes";
 import type { MultiImageError } from "../core/types/MultiImageError";
-import type { UseMultiImageCoreReturn } from "../core/useMultiImageCore";
+import type {
+	UseMultiImageCoreReturn,
+	UseMultiImageCoreUploadedReturn,
+} from "../core/useMultiImageCore";
 import { useMultiImageCore } from "../core/useMultiImageCore";
 import { useRhfImageFieldAdapter } from "./useRhfImageFieldAdapter";
 
-export function useMultiImageInputController<
+export type UseMultiImageInputControllerParams<
 	TFieldName extends string,
 	TForm extends FormWithImageField<TFieldName>,
->(params: {
+> = {
 	form: UseFormReturn<TForm>;
 	name: TFieldName;
 	processFile?: ProcessFileFn;
@@ -21,7 +24,28 @@ export function useMultiImageInputController<
 	onError?: (error: MultiImageError) => void;
 	constraints?: CoreConstraints;
 	messages?: CoreMessages;
-}): UseMultiImageCoreReturn {
+};
+
+export function useMultiImageInputController<
+	TFieldName extends string,
+	TForm extends FormWithImageField<TFieldName>,
+>(
+	params: UseMultiImageInputControllerParams<TFieldName, TForm> & {
+		uploadFile: UploadFileFn;
+	},
+): UseMultiImageCoreUploadedReturn;
+export function useMultiImageInputController<
+	TFieldName extends string,
+	TForm extends FormWithImageField<TFieldName>,
+>(
+	params: UseMultiImageInputControllerParams<TFieldName, TForm>,
+): UseMultiImageCoreReturn;
+export function useMultiImageInputController<
+	TFieldName extends string,
+	TForm extends FormWithImageField<TFieldName>,
+>(
+	params: UseMultiImageInputControllerParams<TFieldName, TForm>,
+): UseMultiImageCoreUploadedReturn {
 	const {
 		form,
 		name,
@@ -34,7 +58,7 @@ export function useMultiImageInputController<
 
 	const adapter = useRhfImageFieldAdapter<TFieldName, TForm>({ form, name });
 
-	return useMultiImageCore({
+	const core = useMultiImageCore({
 		adapter,
 		processFile,
 		uploadFile,
@@ -42,4 +66,9 @@ export function useMultiImageInputController<
 		constraints,
 		messages,
 	});
+
+	// uploadFile の有無は呼び出し側のオーバーロードで解決済み。実体は同じなので
+	// 参照ごと通す。uploads のメンバだけ差し替えると uploads を組み直すことになり、
+	// core が memo 化した参照が毎レンダー変わる
+	return core as UseMultiImageCoreUploadedReturn;
 }

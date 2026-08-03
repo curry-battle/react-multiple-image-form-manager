@@ -4,7 +4,6 @@ export {
 	type TanstackMultiImageControllerProps,
 } from "./TanstackMultiImageController";
 export {
-	type AnyTanstackFieldApi,
 	type AnyTanstackFormApi,
 	type UseTanstackImageFieldAdapterParams,
 	useTanstackImageFieldAdapter,

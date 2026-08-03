@@ -1,7 +1,7 @@
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema";
 import { useForm as useTanstackForm } from "@tanstack/react-form";
 import type { ChangeEvent, ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm as useRhfForm } from "react-hook-form";
 import { z } from "zod";
 import type {
@@ -14,7 +14,13 @@ import type {
 import type { CoreConstraints } from "../../core/types/ImageSchemaTypes";
 import { ImageFormStatus } from "../../core/types/ImageStatus";
 import type { MultiImageError } from "../../core/types/MultiImageError";
+import type { UploadState } from "../../core/types/UploadState";
 import { useImagePreviewUrl } from "../../core/useImagePreviewUrl";
+import type {
+	ReadyImages,
+	UploadsApi,
+	UploadWaitResult,
+} from "../../core/useMultiImageCore";
 import { MultiImageInputController } from "../../react-hook-form/MultiImageInputController";
 import { createImagesSchema } from "../../schemas/zod";
 import { TanstackMultiImageController } from "../../tanstack-form/TanstackMultiImageController";
@@ -38,8 +44,12 @@ export const makeNew = (tempId: string): ImageNew => ({
 	status: ImageFormStatus.New,
 	id: undefined,
 	file: makeFile(),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 });
+
+/** new は uploadRef、既存は uploadedUrl。表示上はどちらも「転送済みの参照」 */
+const uploadRefOf = (image: Image): string | undefined =>
+	image.status === ImageFormStatus.New ? image.uploadRef : image.uploadedUrl;
 
 // ---------- shared ImageItem component ----------
 
@@ -49,18 +59,22 @@ function ImageItem({
 	onChangeFile,
 	onDelete,
 	onMove,
+	onRetry,
 	isFirst,
 	isLast,
 	error,
+	uploadState,
 }: {
 	image: Image;
 	index: number;
 	onChangeFile: (tempId: string, file: File) => void;
 	onDelete: (tempId: string) => void;
 	onMove: (tempId: string, direction: "up" | "down") => void;
+	onRetry: (tempId: string) => void;
 	isFirst: boolean;
 	isLast: boolean;
 	error: string | undefined;
+	uploadState: UploadState | undefined;
 }) {
 	const previewUrl = useImagePreviewUrl(image);
 
@@ -74,11 +88,26 @@ function ImageItem({
 				/>
 			)}
 			<span data-testid={`status-${index}`}>{image.status}</span>
+			<span data-testid={`upload-status-${index}`}>
+				{uploadState?.status ?? "none"}
+			</span>
+			<span data-testid={`upload-progress-${index}`}>
+				{uploadState?.status === "pending" && uploadState.progress !== undefined
+					? uploadState.progress
+					: "-"}
+			</span>
+			<button
+				type="button"
+				data-testid={`retry-${index}`}
+				onClick={() => onRetry(image.tempId)}
+			>
+				retry
+			</button>
 			<span data-testid={`name-${index}`}>
 				{image.status === ImageFormStatus.New ? image.file.name : image.id}
 			</span>
-			{image.uploadedUrl && (
-				<span data-testid={`uploaded-url-${index}`}>{image.uploadedUrl}</span>
+			{uploadRefOf(image) && (
+				<span data-testid={`upload-ref-${index}`}>{uploadRefOf(image)}</span>
 			)}
 			<button
 				type="button"
@@ -116,6 +145,63 @@ function ImageItem({
 				delete
 			</button>
 			{error && <span data-testid={`error-${index}`}>{error}</span>}
+		</div>
+	);
+}
+
+// ---------- uploads panel ----------
+
+type PanelResult =
+	| ({ kind: "wait" } & UploadWaitResult)
+	| ({ kind: "ready"; ok: true } & ReadyImages);
+
+function UploadsPanel({ uploads }: { uploads: UploadsApi }) {
+	const [result, setResult] = useState<PanelResult | undefined>(undefined);
+
+	return (
+		<div>
+			<span data-testid="uploads-pending">{uploads.pending.length}</span>
+			<span data-testid="uploads-failed">{uploads.failed.join(",")}</span>
+			<button
+				type="button"
+				data-testid="wait"
+				onClick={() => {
+					uploads.wait().then((r) => setResult({ kind: "wait", ...r }));
+				}}
+			>
+				wait
+			</button>
+			<button
+				type="button"
+				data-testid="get-ready"
+				onClick={() => {
+					setResult({ kind: "ready", ok: true, ...uploads.getReady() });
+				}}
+			>
+				ready
+			</button>
+			{result && (
+				<span data-testid="submit-result">
+					{result.ok
+						? `ok:${result.images.length}`
+						: `ng:${result.failedTempIds.length}`}
+				</span>
+			)}
+			{result?.ok && (
+				<>
+					<span data-testid="submit-upload-refs">
+						{result.images
+							.map((img) => ("uploadRef" in img ? img.uploadRef : "-"))
+							.join(",")}
+					</span>
+					<span data-testid="submit-deleted">{result.deletedIds.length}</span>
+					{result.kind === "ready" && (
+						<span data-testid="submit-excluded">
+							{result.excludedTempIds.length}
+						</span>
+					)}
+				</>
+			)}
 		</div>
 	);
 }
@@ -175,19 +261,20 @@ export function RhfHarness({
 			uploadFile={uploadFile}
 			onError={onError}
 			render={({
-				itemsWithErrors,
+				items,
 				rootErrors,
 				handleAdd,
 				handleFileChange,
 				handleDelete,
 				handleMove,
+				uploads,
 			}) => (
 				<div>
-					<div data-testid="item-count">{itemsWithErrors.length}</div>
+					<div data-testid="item-count">{items.length}</div>
 					{rootErrors.length > 0 && (
 						<div data-testid="root-error">{rootErrors[0]?.message}</div>
 					)}
-					{itemsWithErrors.map(({ image, errors }, index) => (
+					{items.map(({ image, errors, uploadState }, index) => (
 						<ImageItem
 							key={image.tempId}
 							image={image}
@@ -195,14 +282,19 @@ export function RhfHarness({
 							onChangeFile={(tempId, file) => handleFileChange(tempId, file)}
 							onDelete={handleDelete}
 							onMove={handleMove}
+							onRetry={(tempId) => {
+								uploads.retry(tempId);
+							}}
 							isFirst={index === 0}
-							isLast={index === itemsWithErrors.length - 1}
+							isLast={index === items.length - 1}
 							error={errors?.file?.message}
+							uploadState={uploadState}
 						/>
 					))}
-					{itemsWithErrors.length === 0 && (
+					{items.length === 0 && (
 						<div data-testid="empty-message">No images</div>
 					)}
+					<UploadsPanel uploads={uploads} />
 					<input
 						type="file"
 						accept="image/*"
@@ -265,21 +357,22 @@ export function TanstackHarness({
 			uploadFile={uploadFile}
 			onError={onError}
 			render={({
-				itemsWithErrors,
+				items,
 				rootErrors,
 				handleAdd,
 				handleFileChange,
 				handleDelete,
 				handleMove,
+				uploads,
 			}) => (
 				<div>
-					<div data-testid="item-count">{itemsWithErrors.length}</div>
+					<div data-testid="item-count">{items.length}</div>
 					{rootErrors.length > 0 && (
 						<div data-testid="root-error">
 							{(rootErrors[0] as { message?: string })?.message}
 						</div>
 					)}
-					{itemsWithErrors.map(({ image, errors }, index) => (
+					{items.map(({ image, errors, uploadState }, index) => (
 						<ImageItem
 							key={image.tempId}
 							image={image}
@@ -287,14 +380,19 @@ export function TanstackHarness({
 							onChangeFile={(tempId, file) => handleFileChange(tempId, file)}
 							onDelete={handleDelete}
 							onMove={handleMove}
+							onRetry={(tempId) => {
+								uploads.retry(tempId);
+							}}
 							isFirst={index === 0}
-							isLast={index === itemsWithErrors.length - 1}
+							isLast={index === items.length - 1}
 							error={errors?.file?.message}
+							uploadState={uploadState}
 						/>
 					))}
-					{itemsWithErrors.length === 0 && (
+					{items.length === 0 && (
 						<div data-testid="empty-message">No images</div>
 					)}
+					<UploadsPanel uploads={uploads} />
 					<input
 						type="file"
 						accept="image/*"

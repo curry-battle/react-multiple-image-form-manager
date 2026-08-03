@@ -35,13 +35,35 @@ npm install valibot
 
 ## 使い方 (React Hook Form)
 
-### MultiImageInputController
+### useMultiImageInputController
+
+フォームレベルで呼びます。こうすると送信ハンドラから `uploads` に直接届きます。
 
 ```tsx
-import { ImageFormStatus, type Image } from "@curry-battle/react-multiple-image-form-manager";
-import { MultiImageInputController } from "@curry-battle/react-multiple-image-form-manager/react-hook-form";
+import { useMultiImageInputController } from "@curry-battle/react-multiple-image-form-manager/react-hook-form";
 
 const form = useForm<MyForm>({ ... });
+const { items, rootErrors, handlers, uploads, raw } =
+  useMultiImageInputController({
+    form,
+    name: "profileImages",
+    constraints,
+    uploadFile,
+  });
+
+const onSubmit = async (data: MyForm) => {
+  const waited = await uploads.wait();
+  if (!waited.ok) return;           // waited.failedTempIds
+  await save({ images: waited.images });
+};
+```
+
+### MultiImageInputController
+
+フックの糖衣です。`uploads` は render コールバックの内側でしか取れないため、外側の送信ハンドラから使うならフックを選んでください。
+
+```tsx
+import { MultiImageInputController } from "@curry-battle/react-multiple-image-form-manager/react-hook-form";
 
 <MultiImageInputController
   form={form}
@@ -49,12 +71,13 @@ const form = useForm<MyForm>({ ... });
   constraints={constraints}
   onError={(error) => console.error(error.message)}
   render={({
-    itemsWithErrors,
+    items,
     rootErrors,
     handleAdd,
     handleFileChange,
     handleDelete,
     handleMove,
+    uploads,
     raw,
   }) => {
     return (
@@ -64,27 +87,25 @@ const form = useForm<MyForm>({ ... });
 />
 ```
 
-### useMultiImageInputController
+## 使い方 (TanStack Form)
 
-Controller コンポーネントを使わず、hook を直接利用することも可能です。
+形は同じです。フックはフォームストア経由で読み書きするので、`<form.Field mode="array">` の内側に置く必要はありません。
 
 ```tsx
-import { useMultiImageInputController } from "@curry-battle/react-multiple-image-form-manager/react-hook-form";
+import { useTanstackMultiImageController } from "@curry-battle/react-multiple-image-form-manager/tanstack-form";
 
-const form = useForm<MyForm>({ ... });
-const { itemsWithErrors, rootErrors, handlers, raw } = useMultiImageInputController({
-  form,
-  name: "profileImages",
-  constraints,
-});
+const form = useForm({ ... });
+const { items, rootErrors, handlers, uploads, raw } =
+  useTanstackMultiImageController({
+    form,
+    name: "images",
+    constraints,
+    uploadFile,
+  });
 ```
-
-## 使い方 (TanStack Form)
 
 ```tsx
 import { TanstackMultiImageController } from "@curry-battle/react-multiple-image-form-manager/tanstack-form";
-
-const form = useForm({ ... });
 
 <TanstackMultiImageController
   form={form}
@@ -92,12 +113,13 @@ const form = useForm({ ... });
   constraints={constraints}
   onError={(error) => console.error(error.message)}
   render={({
-    itemsWithErrors,
+    items,
     rootErrors,
     handleAdd,
     handleFileChange,
     handleDelete,
     handleMove,
+    uploads,
     raw,
   }) => {
     return (
@@ -124,15 +146,123 @@ function ImageItem({ image }: { image: Image }) {
 }
 ```
 
-hook のため `itemsWithErrors.map()` のコールバック内では呼べません。上記のように項目コンポーネントに切り出して使用してください。
+hook のため `items.map()` のコールバック内では呼べません。上記のように項目コンポーネントに切り出して使用してください。
+
+## 転送方式の選び方
+
+決めることは 1 つ、その先の分岐が 1 段だけです。
+
+```
+uploadFile を渡す？
+├─ 渡す   → 選択時アップロード。転送はライブラリが持つ
+│            └─ 送信前に:
+│                ├─ uploads.wait()      … 走行中の転送を全部待つ
+│                └─ uploads.getReady()  … 待たずに、未完のものを外す
+│
+└─ 渡さない → ライブラリは転送しない。File を手渡す
+```
+
+**submit 時アップロードという方式は持っていません。** `uploadFile` を渡さないのは「submit 時に転送する」という意味ではなく、**ライブラリが転送に一切関与しない**という意味です。`wait()` / `getReady()` が `{ file, tempId }` を返すので、好きなタイミングで転送してください。
+
+| | `uploadFile` あり | なし |
+|---|---|---|
+| 転送するのは | ライブラリ | 利用側 |
+| タイミング | ファイル選択時 | 利用側が決める |
+| `uploads.pending` / `failed` / `retry` | 使える | 常に空 / 何もしない |
+| `items[].uploadState` | pending / failed / progress | 常に `undefined` |
+| `wait()` | 転送を待つ | 待つ対象が無く即 `ok` |
+| `getReady()` | 未完のものを外す | 何も外さない |
+| 送信素材 | `{ id } \| { uploadRef }` | `{ id } \| { file, tempId }` |
+
+`uploadFile` を渡さない場合でも `wait()` / `getReady()` を呼ぶ意味はあります。**可視順の配列と `deletedIds`** が得られるためです。
+
+## 選択時アップロード (uploadFile / uploads)
+
+`uploadFile` を設定すると、ファイルを選んだ時点で転送が始まります。**転送の完了は項目の表示をブロックしません。** 項目はすぐ配列に入り（プレビューは `file` から描画）、転送は裏で走り、成功したら `uploadRef` が書き戻されます。
+
+`uploadRef` は `uploadFile` が返した値そのものです。恒久ストレージへ直接置く構成では URL になりますが、一時領域へ置いて登録 API に引き渡す構成では不透明なトークンになります。URL としての検証はかけていないため、表示には使えません。
+
+転送中でもユーザーは保存を押せます。送信ハンドラで `uploads.wait()` を await して完了させてください。
+
+```tsx
+const waited = await uploads.wait();
+if (!waited.ok) {
+  // waited.failedTempIds を提示して uploads.retry(tempId) の導線を出す
+  return;
+}
+// そのまま送れる。スナップショットなので、この間にユーザーへ並べ替えさせないこと
+await save({ images: waited.images });
+```
+
+`waited.images` はフォーム state の写しではなく送信素材です。**可視項目のみ・表示順**で、各要素は既にサーバにある画像なら `{ id }`、今回転送したものなら `{ uploadRef }` のどちらかです。`order` フィールドはありません（配列の順序が順序そのものです）。削除対象も含みません。「配列に無いものは削除」と解釈する API にはそのまま渡せます。
+
+削除を明示する API には `waited.deletedIds`（ユーザーが外した既存画像の id）を使ってください。
+
+`uploadFile` を設定していない場合は待つ対象が無いので `wait()` は即座に `ok` を返し、新規項目は `{ file, tempId }` の形で返ります（転送は消費側で行います）。`tempId` が付くのはこの形だけです。`{ id }` と `{ uploadRef }` はそのままサーバへ送る値ですが、`{ file }` は消費側が処理するものなので、失敗した項目を指し示すキーが要るためです。
+
+待たずに保存する場合は `uploads.getReady()` を使います。同期関数で、失敗しません。
+
+```tsx
+const ready = uploads.getReady();
+// ready.excludedTempIds — 今回含まれなかったことをユーザーに伝える
+await save({ images: ready.images });
+```
+
+除外した項目は**フォームに残ります**。伝えないと、後の保存で現れたときにバグに見えます。走行中の項目は転送が続くので次回の保存に入りますが、`uploads.failed` の項目は自動再試行しないため、`uploads.retry(tempId)` を呼ぶまで除外され続けます。導線を分けるなら `excludedTempIds` と `uploads.failed` を突き合わせてください。
+
+差し替え中でも安全です。除外する項目が既存画像の差し替えだった場合、元画像は削除されず同じ位置に戻ります。次の保存で差し替え後と一緒に送られるので、**元画像だけが消える状態にはなりません**。
+
+| メンバ | 型 | 説明 |
+|--------|-----|------|
+| `pending` | `string[]` | 転送中の tempId |
+| `failed` | `string[]` | 転送に失敗した tempId |
+| `retry` | `(tempId: string) => Promise<boolean>` | **失敗した**転送を再実行する。それ以外は `false` |
+| `wait` | `() => Promise<UploadWaitResult>` | 走行中の転送を待ってから送信素材を返す |
+| `getReady` | `() => ReadyImages` | 待たずに同じ素材を返す。同期・失敗しない |
+
+> **フックを既定の入口にしてください。** `useMultiImageInputController` / `useTanstackMultiImageController` はフォームレベルで呼べるので、送信ハンドラから `uploads` に直接届きます。render-props コンポーネントは render コールバックの内側にしか出せず、送信素材の型も緩いまま（`{ id } | { uploadRef } | { file, tempId }`）です。props を `uploadFile` の有無で分けると判別子が関数型になり、render コールバックの引数推論が壊れるためです。緩い型は実行時に現れる形の上位集合なので嘘にはなりませんが、`{ file, tempId }` を受け付けない保存 API へ渡すにはキャストが要ります。
+
+項目ごとの状態は `items` の各要素の `uploadState` から取れます。`{ status: "pending", progress?: number }` / `{ status: "failed", error }` / `undefined` のいずれかです。`progress` は 0..1 で、`uploadFile` が `ctx.onProgress` で報告した後だけ値を持ちます。報告の頻度に制限はありません（整数パーセントが変わらない報告では再レンダーしません）。残り時間の推定は消費側で行ってください。
+
+`"done"` は意図的に公開していません。その状態はメモリ上にしか無く remount で消えるため、それに紐づけた「アップロード済み」表示がフィールドの再マウントのたびに消えます。完了の判定はフォーム state に永続する `image.uploadRef` から導出してください。
+
+転送に失敗しても項目はリストに残ります（選択を黙って捨てないため）。`onError({ type: "upload_file" })` は非同期に、`handleAdd` が `true` を返した後で発火します。`uploadRef` を伴わずに解決した転送は失敗として扱います。
+
+開発時の `<StrictMode>` では、React が effect を再実行する前に一度 cleanup を走らせるため、mount 時に始まった転送は中断されて再発行されます。`uploadFile` は 2 回呼ばれますが、結果を書き戻すのは 1 本だけです。`ctx.signal` を尊重すれば捨てられる側をキャンセルでき、無視した場合は孤児のオブジェクトが残るのでストレージの lifecycle rule で回収してください。
+
+`uploads.wait()` は送信時点でフックが mount されていることを要求します。フォームレベルで呼んでいれば構造的に満たされます（画像 UI が unmount されるウィザード構成でも同じです）。
+
+`uploadRef` を持たない `new` 項目がフォーム state に現れたら（mount 時、remount 後、初期値が非同期に届いたとき）、その転送は再発行されます。すでに失敗した転送は放置されるので `uploads.retry(tempId)` を使ってください。
+
+## ユーティリティ (ImageUtils)
+
+| 関数 | シグネチャ | 用途 |
+|---|---|---|
+| `createNew` | `(tempId, file, uploadRef?) => ImageNew` | 新規項目を作る |
+| `updateNewImageFile` | `(image: ImageNew, newFile) => ImageNew` | `tempId` と差し替えの対応を保ったままファイルを差し替える |
+| `replaceExisting` | `(image: ImageExisting, newFile) => { deletedImage, newImage }` | 既存画像を差し替える。**`markDelete` + `createNew` を手で並べず、これを使ってください** — `getReady()` が元画像を戻すための対応をこの関数が張ります |
+| `markDelete` | `(image: ImageExisting) => ImageToBeDeleted` | 削除対象としてマークする |
+| `markSaved` | `(image: ImageUploaded, { id, previewUrl, uploadedUrl }) => ImageExisting` | 登録が確定した項目を `existing` へ昇格させる |
+
+`markSaved` はサーバへの登録が済んだ項目を昇格させ、次の保存で同じものが新規として再送されるのを防ぎます。引数の型が「転送完了済みでなければ昇格できない」ことを表現しています。
+
+```ts
+const promoted = ImageUtils.markSaved(image, {
+  id: saved.id,
+  previewUrl: saved.url,   // 両方とも必須。uploadRef は不透明なトークンで
+  uploadedUrl: saved.url,  // ありうるので、そこから URL を導出できない
+});
+```
+
+保存が項目ごとに部分成功しうる場合に効きます。1 リクエストで原子的に保存する API では途中まで登録された状態が存在しないので、出番はありません。
 
 ## オプション Props
 
 | Prop | 型 | 説明 |
 |------|-----|------|
 | `processFile` | `(file: File) => Promise<File>` | ファイル追加・差し替え時に前処理（リサイズ・変換等）を行う関数 |
-| `uploadFile` | `(file: File) => Promise<{ uploadedUrl: string }>` | ファイル選択時に即アップロードする関数 |
-| `onError` | `(error: MultiImageError) => void` | `processFile` の失敗や `maxImages` 超過時に呼ばれるエラーハンドラ |
+| `uploadFile` | `(file: File, ctx: { signal: AbortSignal; onProgress: (fraction: number) => void }) => Promise<{ uploadRef: string }>` | ファイル選択時に即アップロードする関数。項目の表示はブロックしない。`ctx.signal` は unmount / ファイル差し替えで abort される（尊重するかは任意。どちらでも結果は破棄される）。`ctx.onProgress` は 0..1 で進捗を報告する。どちらも使わないなら `(file) => ...` と書ける |
+| `onError` | `(error: MultiImageError) => void` | `processFile` の失敗、`uploadFile` の失敗、`maxImages` 超過時に呼ばれるエラーハンドラ |
 | `constraints` | `ImageConstraints` | バリデーション制約（`acceptedTypes` / `maxFileSize` / `maxImages`） |
 | `messages` | `CoreMessages` | i18n 用メッセージカスタマイズ |
 

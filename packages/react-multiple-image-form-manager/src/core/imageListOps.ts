@@ -93,7 +93,7 @@ if (import.meta.vitest) {
 		status: ImageFormStatus.New,
 		id: undefined,
 		file: new File(["data"], "test.jpg", { type: "image/jpeg" }),
-		uploadedUrl: undefined,
+		uploadRef: undefined,
 	});
 
 	const makeExisting = (tempId = "temp_ex"): ImageExisting => ({

@@ -20,7 +20,7 @@ const makeNewImage = (overrides?: Partial<ImageNew>): ImageNew => ({
 	status: ImageFormStatus.New,
 	id: undefined,
 	file: new File(["data"], "test.jpg", { type: "image/jpeg" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	...overrides,
 });
 
@@ -36,7 +36,7 @@ const makeExistingImage = (tempId: string, id: string): ImageExisting => ({
 type TestForm = { images: Image[] };
 
 type Handle = {
-	itemsWithErrors: Array<{ image: Image; errors: unknown }>;
+	items: Array<{ image: Image; errors: unknown }>;
 	rootErrors: Array<unknown>;
 	handleAdd: (file: File) => Promise<boolean>;
 	handleFileChange: (tempId: string, file: File) => Promise<boolean>;
@@ -83,7 +83,7 @@ function HarnessHost(props: {
 			messages={props.messages}
 			render={(p) => {
 				props.handleRef.current = {
-					itemsWithErrors: p.itemsWithErrors,
+					items: p.items,
 					rootErrors: p.rootErrors,
 					handleAdd: p.handleAdd,
 					handleFileChange: p.handleFileChange,
@@ -91,9 +91,7 @@ function HarnessHost(props: {
 					handleMove: p.handleMove,
 					raw: p.raw,
 				};
-				return (
-					<div data-testid="harness">items:{p.itemsWithErrors.length}</div>
-				);
+				return <div data-testid="harness">items:{p.items.length}</div>;
 			}}
 		/>
 	);
@@ -109,16 +107,14 @@ describe("TanstackMultiImageController (integration)", () => {
 
 		await render(<HarnessHost handleRef={handleRef} />);
 
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(0);
+		expect(handleRef.current?.items).toHaveLength(0);
 
 		await act(async () => {
 			await handleRef.current?.handleAdd(makeFile("a.jpg"));
 		});
 
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(1);
-		expect(handleRef.current?.itemsWithErrors[0]?.image.status).toBe(
-			ImageFormStatus.New,
-		);
+		expect(handleRef.current?.items).toHaveLength(1);
+		expect(handleRef.current?.items[0]?.image.status).toBe(ImageFormStatus.New);
 	});
 
 	it("handleDelete: marks an existing image as ToBeDeleted", async () => {
@@ -132,12 +128,12 @@ describe("TanstackMultiImageController (integration)", () => {
 				handleRef={handleRef}
 			/>,
 		);
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(2);
+		expect(handleRef.current?.items).toHaveLength(2);
 		await act(async () => {
 			await handleRef.current?.handleDelete("temp_a");
 		});
-		// itemsWithErrors filters out ToBeDeleted, so only 1 visible
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(1);
+		// items filters out ToBeDeleted, so only 1 visible
+		expect(handleRef.current?.items).toHaveLength(1);
 		// raw still has both (existing + tobedeleted)
 		const raw = handleRef.current?.raw.watchedImages ?? [];
 		expect(raw).toHaveLength(2);
@@ -151,11 +147,11 @@ describe("TanstackMultiImageController (integration)", () => {
 		await render(
 			<HarnessHost initialImages={[newImg]} handleRef={handleRef} />,
 		);
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(1);
+		expect(handleRef.current?.items).toHaveLength(1);
 		await act(async () => {
 			await handleRef.current?.handleDelete("temp_n");
 		});
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(0);
+		expect(handleRef.current?.items).toHaveLength(0);
 		expect(handleRef.current?.raw.watchedImages).toHaveLength(0);
 	});
 
@@ -284,7 +280,7 @@ describe("TanstackMultiImageController (integration)", () => {
 			);
 		});
 
-		const item = handleRef.current?.itemsWithErrors[0];
+		const item = handleRef.current?.items[0];
 		expect(item).toBeDefined();
 		expect(item?.errors).toBeDefined();
 		expect(
@@ -335,7 +331,7 @@ describe("TanstackMultiImageController (external reset parity)", () => {
 					name="images"
 					render={(p) => {
 						handleRef.current = {
-							itemsWithErrors: p.itemsWithErrors,
+							items: p.items,
 							rootErrors: p.rootErrors,
 							handleAdd: p.handleAdd,
 							handleFileChange: p.handleFileChange,
@@ -343,9 +339,7 @@ describe("TanstackMultiImageController (external reset parity)", () => {
 							handleMove: p.handleMove,
 							raw: p.raw,
 						};
-						return (
-							<div data-testid="harness">items:{p.itemsWithErrors.length}</div>
-						);
+						return <div data-testid="harness">items:{p.items.length}</div>;
 					}}
 				/>
 			);
@@ -422,7 +416,7 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 				onError={props.onError}
 				render={(p) => {
 					props.handleRef.current = {
-						itemsWithErrors: p.itemsWithErrors,
+						items: p.items,
 						rootErrors: p.rootErrors,
 						handleAdd: p.handleAdd,
 						handleFileChange: p.handleFileChange,
@@ -430,7 +424,7 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 						handleMove: p.handleMove,
 						raw: p.raw,
 					};
-					return <div>items:{p.itemsWithErrors.length}</div>;
+					return <div>items:{p.items.length}</div>;
 				}}
 			/>
 		);

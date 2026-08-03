@@ -73,7 +73,7 @@ test.describe("フォーム送信", () => {
 });
 
 test.describe("送信ペイロード検証", () => {
-	test("混在ケース: 既存差替→削除→新規追加→送信で status/order/uploadedUrl が正しい", async ({
+	test("混在ケース: 既存差替→削除→新規追加→送信で images/deletedIds が正しい", async ({
 		page,
 	}) => {
 		await page.goto("/");
@@ -82,12 +82,8 @@ test.describe("送信ペイロード検証", () => {
 		// API.updateUserProfile は console.log("Updating user profile with data:", payload) を出力する
 		// Playwright の ConsoleMessage.args() で JSON シリアライズ可能な引数を取得する
 		type SubmitPayload = {
-			profileImages: Array<{
-				id?: string;
-				status: string;
-				order?: number;
-				uploadedUrl?: string;
-			}>;
+			profileImages: Array<{ id?: string; uploadRef?: string }>;
+			deletedImageIds: string[];
 		};
 		let capturedPayload: SubmitPayload | null = null;
 		page.on("console", async (msg) => {
@@ -120,8 +116,8 @@ test.describe("送信ペイロード検証", () => {
 					if (!text) return false;
 					const arr = JSON.parse(text);
 					return arr.some(
-						(img: { status: string; uploadedUrl?: string }) =>
-							img.status === "new" && img.uploadedUrl,
+						(img: { status: string; uploadRef?: string }) =>
+							img.status === "new" && img.uploadRef,
 					);
 				},
 				{ timeout: 15_000 },
@@ -142,8 +138,8 @@ test.describe("送信ペイロード検証", () => {
 					if (!text) return false;
 					const arr = JSON.parse(text);
 					const newWithUrl = arr.filter(
-						(img: { status: string; uploadedUrl?: string }) =>
-							img.status === "new" && img.uploadedUrl,
+						(img: { status: string; uploadRef?: string }) =>
+							img.status === "new" && img.uploadRef,
 					);
 					return newWithUrl.length >= 2;
 				},
@@ -157,43 +153,23 @@ test.describe("送信ペイロード検証", () => {
 		await expect(submitButton).toHaveText("保存", { timeout: 15_000 });
 		await expect(submitButton).toBeEnabled();
 
-		// 送信ペイロードの検証
-		expect(capturedPayload).not.toBeNull();
+		// 送信ペイロードの検証。console イベントの到着はクリックと非同期なので待つ
+		await expect.poll(() => capturedPayload).not.toBeNull();
 		// biome-ignore lint/style/noNonNullAssertion: capturedPayload is verified non-null above; let captured in async closure prevents TS narrowing
-		const profileImages = capturedPayload!.profileImages;
+		const payload = capturedPayload!;
 
-		// New 画像が2つ、いずれも uploadedUrl + order あり
-		const newImages = profileImages.filter((img) => img.status === "new");
-		expect(newImages).toHaveLength(2);
-		for (const img of newImages) {
-			expect(img.uploadedUrl).toBeDefined();
-			expect(typeof img.uploadedUrl).toBe("string");
-			expect(typeof img.order).toBe("number");
+		// 表示順の配列。既存 2 件は差し替え・削除で消えたので、新規 2 件だけが残る
+		expect(payload.profileImages).toHaveLength(2);
+		for (const img of payload.profileImages) {
+			expect(typeof img.uploadRef).toBe("string");
+			expect(img.id).toBeUndefined();
 		}
 
-		// ToBeDeleted 画像（差し替え元 + 削除した既存）
-		const deletedImages = profileImages.filter(
-			(img) => img.status === "tobedeleted",
-		);
-		expect(deletedImages).toHaveLength(2);
-		for (const img of deletedImages) {
-			expect(img.order).toBeUndefined();
+		// 差し替え元 + 削除した既存
+		expect(payload.deletedImageIds).toHaveLength(2);
+		for (const id of payload.deletedImageIds) {
+			expect(typeof id).toBe("string");
 		}
-
-		// Existing は残っていない
-		const existingImages = profileImages.filter(
-			(img) => img.status === "existing",
-		);
-		expect(existingImages).toHaveLength(0);
-
-		// order の連番検証
-		const ordered = profileImages
-			.filter((img) => img.order !== undefined)
-			// biome-ignore lint/style/noNonNullAssertion: order is guaranteed defined by the filter above
-			.sort((a, b) => a.order! - b.order!);
-		ordered.forEach((img, i) => {
-			expect(img.order).toBe(i);
-		});
 	});
 });
 
@@ -216,8 +192,8 @@ test.describe("アップロード完了後の送信", () => {
 					if (!text) return false;
 					const arr = JSON.parse(text);
 					return arr.some(
-						(img: { status: string; uploadedUrl?: string }) =>
-							img.status === "new" && img.uploadedUrl,
+						(img: { status: string; uploadRef?: string }) =>
+							img.status === "new" && img.uploadRef,
 					);
 				},
 				{ timeout: 15_000 },

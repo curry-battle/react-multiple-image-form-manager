@@ -41,6 +41,76 @@ pnpm install
 pnpm run dev:example:rhf
 ```
 
+## 処理の流れ
+
+ファイルを選んだ瞬間に S3 への転送が始まるが、**転送の完了は項目の表示をブロックしない**。保存を押した時点で未完の転送があれば、そこで待ち合わせる。
+
+```
+[ファイル選択]
+  handlers.handleAdd(file)                        ProfileForm.tsx
+    → items に New が入り、その場で 1 枚増える
+    → 裏で uploadFile が走り出す（完了を待たない）
+
+  handleUploadFile(file)                          ProfileForm.tsx
+    → API.getPresignedUrl()                       api.ts   DB は触らない
+    → API.uploadToS3()                            api.ts   S3 に直接 PUT
+    → { uploadRef } を返す                                 転送先の参照
+
+  転送が完了すると、ライブラリが該当の Image を uploadRef 付きで作り直し、
+  フォームの配列ごと差し替える（元のオブジェクトは書き換えない）
+    → 画面下部の「画像の状態」の JSON に uploadRef が現れる
+    → 以降「転送が済んでいるか」はこの値の有無で判定できる
+
+[保存ボタン]
+  uploads.wait()                                  ProfileForm.tsx
+    → 走行中の転送が全部終わるまで待つ
+    → ok: false なら failedTempIds を提示して終わり
+    → ok: true なら images / deletedIds が返る
+
+  API.updateUserProfile(id, name, images, deletedIds)   api.ts
+```
+
+### 転送中に何が見えるか
+
+| 見たいもの | どこから取るか |
+|---|---|
+| この画像は転送中か / 失敗したか | `items[].uploadState`（`FormMultiImageItem` へ渡す） |
+| 何件走っているか | `uploads.pending.length` |
+| 失敗した項目 | `uploads.failed` → `uploads.retry(tempId)` で再試行 |
+| 転送の進捗 | `items[].uploadState.progress`（`uploadFile` が `ctx.onProgress` で報告した場合） |
+
+`FormMultiImageItem` は転送中・失敗・進捗を描画するようにしてある。ただし**この例のモック API は進捗を報告しない**ため、実際に出るのは「アップロード中」だけ。パーセントも出したい場合は `handleUploadFile` の中で `ctx.onProgress(送信済み / 全体)` を呼ぶ（`XMLHttpRequest` の `upload.onprogress` などから）。
+
+### 保存時に何が送られるか
+
+`uploads.wait()` が返す `images` は**可視項目のみ・表示順**の配列で、各要素は次のどちらか。
+
+```ts
+{ id: "既存画像のID" }        // サーバに既にある画像
+{ uploadRef: "転送先の参照" }  // 今回アップロードした画像
+```
+
+（`uploadFile` を設定しない構成では、新規画像は `{ file, tempId }` で返る）
+
+`uploadRef` は `uploadFile` が返した値がそのまま入る。**この例では S3 の URL** だが、ライブラリ側は URL であることを前提にしていない。S3 の key だけを返す構成や、バックエンドが発行した ID（アップロード用トークンなど）を返す構成もある。表示に使える保証が無いので、プレビューは `uploadRef` ではなく `file` から描く（`useImagePreviewUrl`）。既存画像が持つ `uploadedUrl` は本物の URL なので、名前を分けてある。
+
+`order` フィールドは無い。**配列の順序がそのまま表示順**なので、受け取る側は index を見ればよい。
+
+削除対象は `images` に入らず `deletedIds` に分かれる。「配列に無いものは削除」と解釈する API なら `deletedIds` は無視してよい。
+
+既存画像を差し替えた場合は「元画像の削除 + 新規追加」として扱われるので、`deletedIds` に元画像の id が入り、`images` に新しい `uploadRef` が入る。
+
+### 保存を待たせたくない場合
+
+`uploads.wait()` の代わりに `uploads.getReady()` を使うと、転送の完了を待たずに「いま送れるものだけ」で保存できる。同期関数で、失敗しない。
+
+```ts
+const ready = uploads.getReady();
+// ready.excludedTempIds — 今回含まれなかった項目。ユーザーに伝えること
+```
+
+除外された項目はフォームに残り転送も続くので、次の保存で入る。既存画像の差し替え中でも、元画像は削除されずその位置に残るので、**元画像だけが消えることはない**。
+
 ## ディレクトリ構成
 
 ```

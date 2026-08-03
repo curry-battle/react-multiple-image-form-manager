@@ -23,7 +23,7 @@ const makeExistingImage = (tempId: string, id: string): Image => ({
 type TestForm = { images: Image[] };
 
 type Handle = {
-	itemsWithErrors: Array<{ image: Image; errors: unknown }>;
+	items: Array<{ image: Image; errors: unknown }>;
 	rootErrors: Array<unknown>;
 	handleAdd: (file: File) => Promise<boolean>;
 	handleFileChange: (tempId: string, file: File) => Promise<boolean>;
@@ -48,7 +48,7 @@ function HarnessHost(props: {
 			onError={props.onError}
 			render={(p) => {
 				props.handleRef.current = {
-					itemsWithErrors: p.itemsWithErrors,
+					items: p.items,
 					rootErrors: p.rootErrors,
 					handleAdd: p.handleAdd,
 					handleFileChange: p.handleFileChange,
@@ -56,9 +56,7 @@ function HarnessHost(props: {
 					handleMove: p.handleMove,
 					raw: p.raw,
 				};
-				return (
-					<div data-testid="harness">items:{p.itemsWithErrors.length}</div>
-				);
+				return <div data-testid="harness">items:{p.items.length}</div>;
 			}}
 		/>
 	);
@@ -73,7 +71,7 @@ describe("MultiImageInputController (render-props component)", () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<HarnessHost handleRef={handleRef} />);
 		expect(handleRef.current).not.toBeNull();
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(0);
+		expect(handleRef.current?.items).toHaveLength(0);
 	});
 
 	it("renders with initial existing images", async () => {
@@ -87,7 +85,7 @@ describe("MultiImageInputController (render-props component)", () => {
 				handleRef={handleRef}
 			/>,
 		);
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(2);
+		expect(handleRef.current?.items).toHaveLength(2);
 	});
 
 	it("handleAdd adds a new image and re-renders", async () => {
@@ -98,10 +96,8 @@ describe("MultiImageInputController (render-props component)", () => {
 			await handleRef.current?.handleAdd(makeFile("a.jpg"));
 		});
 
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(1);
-		expect(handleRef.current?.itemsWithErrors[0]?.image.status).toBe(
-			ImageFormStatus.New,
-		);
+		expect(handleRef.current?.items).toHaveLength(1);
+		expect(handleRef.current?.items[0]?.image.status).toBe(ImageFormStatus.New);
 	});
 
 	it("handleDelete removes a new image", async () => {
@@ -117,7 +113,7 @@ describe("MultiImageInputController (render-props component)", () => {
 			await handleRef.current?.handleDelete(tempId);
 		});
 
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(0);
+		expect(handleRef.current?.items).toHaveLength(0);
 	});
 
 	it("handleFileChange replaces existing image (New + ToBeDeleted pair)", async () => {
@@ -138,8 +134,8 @@ describe("MultiImageInputController (render-props component)", () => {
 			ImageFormStatus.New,
 			ImageFormStatus.ToBeDeleted,
 		]);
-		// itemsWithErrors filters out ToBeDeleted
-		expect(handleRef.current?.itemsWithErrors).toHaveLength(1);
+		// items filters out ToBeDeleted
+		expect(handleRef.current?.items).toHaveLength(1);
 	});
 
 	it("handleMove swaps items", async () => {
@@ -165,7 +161,7 @@ describe("MultiImageInputController (render-props component)", () => {
 
 		const h = handleRef.current;
 		expect(h).not.toBeNull();
-		expect(h?.itemsWithErrors).toBeDefined();
+		expect(h?.items).toBeDefined();
 		expect(h?.rootErrors).toBeDefined();
 		expect(h?.handleAdd).toBeInstanceOf(Function);
 		expect(h?.handleFileChange).toBeInstanceOf(Function);

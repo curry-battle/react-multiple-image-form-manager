@@ -51,7 +51,11 @@ export function createImagesSchema(options: ImageSchemaOptions) {
 		id: v.optional(v.undefined()),
 		file: fileSchema,
 		previewUrl: v.optional(v.undefined()),
-		uploadedUrl: v.optional(v.pipe(v.string(), v.url())),
+		// uploadFile が返す値は URL とは限らない（登録 API に渡す不透明トークンでも
+		// よい）ため URL 検証はかけない。existing 側は本物の URL なので残す
+		uploadRef: v.optional(v.pipe(v.string(), v.minLength(1))),
+		// スキーマから漏らすとパース時に落ちて、差し替えの対応関係が失われる
+		replacesTempId: v.optional(v.pipe(v.string(), v.minLength(1))),
 	});
 
 	const existingImageSchema = v.object({

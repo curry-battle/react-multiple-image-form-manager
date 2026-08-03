@@ -2,10 +2,14 @@ export type { ImageFieldAdapter } from "./core/ImageFieldAdapter";
 export type {
 	Image,
 	ImageExisting,
-	ImageForSubmit,
 	ImageNew,
 	ImageToBeDeleted,
+	ImageUploaded,
+	LocalSubmitImage,
 	ProcessFileFn,
+	SubmitImage,
+	UploadedSubmitImage,
+	UploadFileContext,
 	UploadFileFn,
 	UploadFileResult,
 } from "./core/types/Image";
@@ -16,9 +20,9 @@ export type {
 	FormWithImageField,
 	ImageConstraints,
 	ImageFieldError,
+	ImageItem,
 	ImageSchemaOptions,
 	ImagesError,
-	ImageWithErrors,
 	SingleImageError,
 } from "./core/types/ImageSchemaTypes";
 export { defaultCoreMessages } from "./core/types/ImageSchemaTypes";
@@ -27,9 +31,17 @@ export type {
 	MultiImageError,
 	MultiImageErrorType,
 } from "./core/types/MultiImageError";
+export type { UploadState } from "./core/types/UploadState";
 export { useImagePreviewUrl } from "./core/useImagePreviewUrl";
 export {
+	type ReadyImages,
+	type ReadyUploadedImages,
+	type UploadsApi,
+	type UploadsUploadedApi,
+	type UploadWaitResult,
+	type UploadWaitUploadedResult,
 	type UseMultiImageCoreParams,
 	type UseMultiImageCoreReturn,
+	type UseMultiImageCoreUploadedReturn,
 	useMultiImageCore,
 } from "./core/useMultiImageCore";

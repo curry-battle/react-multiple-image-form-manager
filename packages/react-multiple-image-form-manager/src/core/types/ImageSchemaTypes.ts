@@ -1,4 +1,5 @@
 import type { Image } from "./Image";
+import type { UploadState } from "./UploadState";
 
 export type CoreConstraints = {
 	maxImages?: number;
@@ -51,7 +52,13 @@ export type ImageFieldError = {
 
 export type SingleImageError = Partial<
 	Record<
-		"file" | "id" | "previewUrl" | "uploadedUrl" | "status",
+		| "file"
+		| "id"
+		| "previewUrl"
+		| "uploadedUrl"
+		| "uploadRef"
+		| "replacesTempId"
+		| "status",
 		ImageFieldError
 	>
 >;
@@ -61,7 +68,13 @@ export type ImagesError = {
 	root: ImageFieldError[];
 };
 
-export type ImageWithErrors = {
+export type ImageItem = {
+	/**
+	 * 表示用の画像。転送済みで form state への反映が済んでいない場合、
+	 * 解決済みの uploadRef をマージして返す（真実は form state 側）
+	 */
 	image: Image;
 	errors: SingleImageError | undefined;
+	/** 転送中・失敗のときだけ値を持つ。完了は image.uploadRef から導出する */
+	uploadState: UploadState | undefined;
 };

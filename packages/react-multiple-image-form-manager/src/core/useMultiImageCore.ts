@@ -1,13 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ImageFieldAdapter } from "./ImageFieldAdapter";
 import * as ops from "./imageListOps";
-import type { Image, ProcessFileFn, UploadFileFn } from "./types/Image";
+import type {
+	Image,
+	ImageNew,
+	ProcessFileFn,
+	SubmitImage,
+	UploadedSubmitImage,
+	UploadFileFn,
+} from "./types/Image";
 import { generateTempId, ImageUtils } from "./types/Image";
 import type {
 	CoreConstraints,
 	CoreMessages,
 	ImageFieldError,
-	ImageWithErrors,
+	ImageItem,
 } from "./types/ImageSchemaTypes";
 import { defaultCoreMessages } from "./types/ImageSchemaTypes";
 import { ImageFormStatus } from "./types/ImageStatus";
@@ -15,6 +22,7 @@ import type {
 	MultiImageError,
 	MultiImageErrorType,
 } from "./types/MultiImageError";
+import type { UploadState } from "./types/UploadState";
 
 export type UseMultiImageCoreParams = {
 	adapter: ImageFieldAdapter;
@@ -25,8 +33,73 @@ export type UseMultiImageCoreParams = {
 	messages?: CoreMessages;
 };
 
-export type UseMultiImageCoreReturn = {
-	itemsWithErrors: ImageWithErrors[];
+/**
+ * 走行中の転送を待ち合わせた結果。
+ *
+ * `images` は可視順の送信素材（SubmitImage の doc を参照）。`deletedIds` は
+ * 削除対象の既存 id で、「配列に無いものは削除」と宣言する API では使わない。
+ */
+export type UploadWaitResult =
+	| { ok: true; images: SubmitImage[]; deletedIds: string[] }
+	| { ok: false; failedTempIds: string[] };
+
+/** uploadFile を設定した場合。new 項目が uploadRef を持つ形に確定する */
+export type UploadWaitUploadedResult =
+	| { ok: true; images: UploadedSubmitImage[]; deletedIds: string[] }
+	| { ok: false; failedTempIds: string[] };
+
+/**
+ * 転送の完了を待たずに集めた送信素材。
+ *
+ * 未完了の項目は `images` に入らず `excludedTempIds` で返る。返さないと
+ * 消費側が「この画像は含まれませんでした」と提示できない。
+ */
+export type ReadyImages = {
+	images: SubmitImage[];
+	deletedIds: string[];
+	excludedTempIds: string[];
+};
+
+/** uploadFile を設定した場合。new 項目が uploadRef を持つ形に確定する */
+export type ReadyUploadedImages = {
+	images: UploadedSubmitImage[];
+	deletedIds: string[];
+	excludedTempIds: string[];
+};
+
+export type UploadsApi = {
+	/** 転送中の tempId。件数は length */
+	pending: string[];
+	/** 転送に失敗した tempId */
+	failed: string[];
+	/** failed の項目のみ受け付ける。それ以外は false */
+	retry: (tempId: string) => Promise<boolean>;
+	/**
+	 * 走行中の転送の完了を待ってから送信素材を返す。
+	 * uploadFile 未設定なら待つ対象が無いので即座に ok を返す
+	 */
+	wait: () => Promise<UploadWaitResult>;
+	/**
+	 * 待たずに、いま送れるものだけで送信素材を作る。
+	 *
+	 * 除外した項目は excludedTempIds で返る。項目自体はフォームに残るので、
+	 * 消費側は「今回は含まれなかった」と提示すること。
+	 *
+	 * 除外した項目が既存画像の差し替えだった場合は、元画像を同じ位置へ戻す。
+	 * 差し替え後だけを抜くと元画像の削除だけが送信され、元が消えて差し替え後も
+	 * 入らない状態になるため
+	 */
+	getReady: () => ReadyImages;
+};
+
+/** uploadFile を設定した場合の uploads。送信素材の型だけが異なる */
+export type UploadsUploadedApi = Omit<UploadsApi, "wait" | "getReady"> & {
+	wait: () => Promise<UploadWaitUploadedResult>;
+	getReady: () => ReadyUploadedImages;
+};
+
+type CoreBase = {
+	items: ImageItem[];
 	rootErrors: ImageFieldError[];
 	handlers: {
 		handleAdd: (file: File) => Promise<boolean>;
@@ -37,12 +110,72 @@ export type UseMultiImageCoreReturn = {
 	raw: { watchedImages: readonly Image[] };
 };
 
+export type UseMultiImageCoreReturn = CoreBase & {
+	uploads: UploadsApi;
+};
+
+export type UseMultiImageCoreUploadedReturn = CoreBase & {
+	uploads: UploadsUploadedApi;
+};
+
+/**
+ * 転送の台帳。フォーム state には持たない（UploadState の doc を参照）。
+ *
+ * ImageFieldAdapter は setImages の反映が同期であることを契約していない。
+ * 反映を次のレンダーまで遅らせる実装でも正しく動くよう、解決済み参照の判定は
+ * フォーム state と本台帳をマージして行う。file を持つのは「その uploadRef が
+ * どの File のものか」を後から検証するため。
+ */
+type UploadRecord =
+	| {
+			status: "pending";
+			file: File;
+			controller: AbortController;
+			/** 転送が settle したら解決する。uploads.wait の待機対象 */
+			settled: Promise<void>;
+	  }
+	| { status: "done"; file: File; uploadRef: string }
+	| { status: "failed"; file: File; error: unknown };
+
+/**
+ * 同一 tempId で書き戻しが連続して自己破棄された回数の上限。
+ *
+ * 1 回は消費側が handlers を介さず setImages でファイルを差し替えた場合に
+ * 正常に起こる。2 回連続は adapter が File の参照を保持していない疑いが濃く、
+ * 放置すると再発行が永久に回るため失敗へ倒す（ImageFieldAdapter の doc を参照）
+ */
+const SELF_DISCARD_LIMIT = 2;
+
+/**
+ * uploads.wait の収束ループで、進捗の無い周回を何回続けたら打ち切るか。
+ *
+ * 1 回で打ち切ると、待機中のファイル選び直し（元の転送が中断され、新しい転送が
+ * まだ結果を出していない周回）を誤って失敗と判定する。
+ *
+ * 既知の違反モード（File の参照を保持しない adapter）では SELF_DISCARD_LIMIT が
+ * 先に発火するため、この打ち切りに到達する経路は今のところ見つかっていない。
+ * それでも残すのは、収束ループの停止性を reconciliation 側の実装に依存させない
+ * ため。自己破棄として数えられない破棄経路が将来生まれても、ここで止まる
+ */
+const STALLED_ROUND_LIMIT = 2;
+
+export function useMultiImageCore(
+	params: UseMultiImageCoreParams & { uploadFile: UploadFileFn },
+): UseMultiImageCoreUploadedReturn;
+export function useMultiImageCore(
+	params: UseMultiImageCoreParams,
+): UseMultiImageCoreReturn;
+// 実装は緩い側で組む。厳しい側の保証（new 項目の uploadRef 確定）は
+// uploadFile 設定時の ok 条件から導かれるもので、実装内部で表現できる事実ではない
 export function useMultiImageCore(
 	params: UseMultiImageCoreParams,
 ): UseMultiImageCoreReturn {
 	const { adapter, processFile, uploadFile, onError, constraints, messages } =
 		params;
 	const maxImages = constraints?.maxImages;
+	// 参照ではなく有無だけを見る。毎レンダー新しい関数を渡す consumer で
+	// reconciliation を無駄に発火させない
+	const hasUploadFile = uploadFile !== undefined;
 
 	const msg = useMemo(
 		() => ({
@@ -57,6 +190,56 @@ export function useMultiImageCore(
 	useEffect(() => {
 		adapterRef.current = adapter;
 	}, [adapter]);
+
+	// startUpload は effect からも呼ぶため参照を安定させたい。
+	// 発火時点の最新値が要るものは ref 経由で読む
+	const uploadFileRef = useRef<UploadFileFn | undefined>(uploadFile);
+	const onErrorRef = useRef(onError);
+	const msgRef = useRef(msg);
+	useEffect(() => {
+		uploadFileRef.current = uploadFile;
+		onErrorRef.current = onError;
+		msgRef.current = msg;
+	}, [uploadFile, onError, msg]);
+
+	const recordsRef = useRef<ReadonlyMap<string, UploadRecord>>(new Map());
+	const [records, setRecordsState] = useState<
+		ReadonlyMap<string, UploadRecord>
+	>(recordsRef.current);
+	const selfDiscardsRef = useRef(new Map<string, number>());
+
+	/** mutate は変更があったかを返す。false なら再レンダーを起こさない */
+	const writeRecords = useCallback(
+		(mutate: (draft: Map<string, UploadRecord>) => boolean) => {
+			const draft = new Map(recordsRef.current);
+			if (!mutate(draft)) return;
+			recordsRef.current = draft;
+			setRecordsState(draft);
+		},
+		[],
+	);
+
+	// 進捗は台帳と別に持つ。UploadRecord を差し替えて表現すると、書き戻しの
+	// 可否を判定している「自分がまだ現行レコードか」の参照比較（startUpload の
+	// isCurrent）が進捗報告のたびに崩れる
+	const progressRef = useRef<ReadonlyMap<string, number>>(new Map());
+	const [progress, setProgressState] = useState<ReadonlyMap<string, number>>(
+		progressRef.current,
+	);
+
+	const writeProgress = useCallback(
+		(tempId: string, fraction: number | undefined) => {
+			const draft = new Map(progressRef.current);
+			if (fraction === undefined) {
+				if (!draft.delete(tempId)) return;
+			} else {
+				draft.set(tempId, fraction);
+			}
+			progressRef.current = draft;
+			setProgressState(draft);
+		},
+		[],
+	);
 
 	const safeValidate = useCallback(async () => {
 		try {
@@ -87,21 +270,150 @@ export function useMultiImageCore(
 		[onError, processFile],
 	);
 
-	const executeUploadFile = useCallback(
-		async (
-			file: File,
-			errorMessage: () => string,
-		): Promise<{ uploadedUrl: string } | "skip" | "error"> => {
-			if (!uploadFile) return "skip";
-			try {
-				const result = await uploadFile(file);
-				return { uploadedUrl: result.uploadedUrl };
-			} catch (err) {
-				onError?.({ type: "upload_file", message: errorMessage(), cause: err });
-				return "error";
-			}
+	/**
+	 * 転送を開始する。完了を待たず即座に戻る。
+	 *
+	 * file には「state に格納したのと同一の File オブジェクト」を渡すこと。
+	 * processFile を設定した consumer で加工前の File を渡すと、書き戻し時の
+	 * 同一性比較が常に不成立となり結果が一度も反映されない。
+	 */
+	const startUpload = useCallback(
+		(tempId: string, file: File): void => {
+			const upload = uploadFileRef.current;
+			if (!upload) return;
+
+			const current = recordsRef.current.get(tempId);
+			// 同一 File の転送が走行中なら二重発行しない。abort 済みでも settle 前は
+			// 走行中として扱う。中断要求から settle までの間に再発行すると、
+			// 中断待ちの転送と新しい転送が並走する
+			if (current?.status === "pending" && current.file === file) return;
+			// 同一項目で別 File の転送が走っている場合、その結果は書き戻し時に破棄されるが、
+			// 転送を続ける理由も無いので中断する
+			if (current?.status === "pending") current.controller.abort();
+
+			const controller = new AbortController();
+			let settle!: () => void;
+			const settled = new Promise<void>((resolve) => {
+				settle = resolve;
+			});
+			// 以降の書き込みは「台帳のエントリがまだ自分のものか」で判定する。
+			// 差し替え・削除で置き換わっていれば書き込まない
+			const record: UploadRecord = {
+				status: "pending",
+				file,
+				controller,
+				settled,
+			};
+			const isCurrent = () => recordsRef.current.get(tempId) === record;
+
+			const fail = (error: unknown) => {
+				writeRecords((draft) => {
+					if (draft.get(tempId) !== record) return false;
+					draft.set(tempId, { status: "failed", file, error });
+					return true;
+				});
+				onErrorRef.current?.({
+					type: "upload_file",
+					message: msgRef.current.uploadFile(),
+					cause: error,
+				});
+			};
+
+			// 進捗イベントはチャンクごとに飛びうる。台帳へそのまま書くと 1 チャンク
+			// ごとに再レンダーが走るため、表示が変わらない報告は捨てる。
+			// 丸めるのは書き込みの判定だけで、保持する値は報告されたまま
+			let lastPercent = -1;
+			const onProgress = (fraction: number): void => {
+				if (!Number.isFinite(fraction) || !isCurrent()) return;
+				const clamped = Math.min(1, Math.max(0, fraction));
+				const percent = Math.floor(clamped * 100);
+				if (percent === lastPercent) return;
+				lastPercent = percent;
+				writeProgress(tempId, clamped);
+			};
+
+			const run = async (): Promise<void> => {
+				try {
+					const result = await upload(file, {
+						signal: controller.signal,
+						onProgress,
+					});
+					if (controller.signal.aborted || !isCurrent()) return;
+					// resolve したのに参照が無い実装（API レスポンスの欠損など）を
+					// 成功として扱うと、done なのに未解決の項目が残り再発行が走り続ける。
+					// 契約違反は失敗に倒して retry へ回す
+					if (
+						typeof result?.uploadRef !== "string" ||
+						result.uploadRef === ""
+					) {
+						throw new Error("uploadFile resolved without uploadRef");
+					}
+
+					const ad = adapterRef.current;
+					const index = ad.images.findIndex((img) => img.tempId === tempId);
+					if (index === -1) return;
+					const item = ad.images[index];
+					// updateNewImageFile は tempId を保持するため、index 再解決だけでは
+					// ファイル差し替えを検出できない。転送した File との同一性で判定する
+					if (item.status !== ImageFormStatus.New || item.file !== file) {
+						// 自分がまだ現行レコードなのに対象が入れ替わっている（＝自己破棄）。
+						// 誰も引き継いでいないため、繰り返すなら adapter が File の参照を
+						// 保持していない疑いが濃い
+						const count = (selfDiscardsRef.current.get(tempId) ?? 0) + 1;
+						selfDiscardsRef.current.set(tempId, count);
+						if (count >= SELF_DISCARD_LIMIT) {
+							fail(
+								new Error(
+									"upload result was discarded repeatedly; the adapter may not preserve File references",
+								),
+							);
+						}
+						return;
+					}
+
+					const next = [...ad.images];
+					next[index] = { ...item, uploadRef: result.uploadRef };
+					ad.setImages(next);
+					selfDiscardsRef.current.delete(tempId);
+
+					writeRecords((draft) => {
+						if (draft.get(tempId) !== record) return false;
+						draft.set(tempId, {
+							status: "done",
+							file,
+							uploadRef: result.uploadRef,
+						});
+						return true;
+					});
+				} catch (err) {
+					if (controller.signal.aborted) return;
+					fail(err);
+				} finally {
+					// 中断・破棄で早期 return した場合は pending のまま残る。
+					// 台帳から落として待機対象から外す（再発行は reconciliation が担う）
+					writeRecords((draft) =>
+						draft.get(tempId) === record ? draft.delete(tempId) : false,
+					);
+					// 進捗は転送 1 本の寿命に閉じる。ただし別の転送に引き継がれていたら
+					// 消さない。消すと後発の転送が報告済みの進捗が巻き戻る
+					const current = recordsRef.current.get(tempId);
+					if (!(current?.status === "pending" && current !== record)) {
+						writeProgress(tempId, undefined);
+					}
+					settle();
+				}
+			};
+
+			// run() は同期 throw する uploadFile 実装で catch まで同期到達しうるため、
+			// 台帳へ載せてから起動する
+			writeRecords((draft) => {
+				draft.set(tempId, record);
+				return true;
+			});
+			writeProgress(tempId, undefined);
+			void run();
 		},
-		[onError, uploadFile],
+		[writeProgress, writeRecords],
 	);
 
 	const getVisibleCount = useCallback(() => {
@@ -143,33 +455,23 @@ export function useMultiImageCore(
 			);
 			if (!processedFile) return false;
 
-			const uploadResult = await executeUploadFile(
-				processedFile,
-				msg.uploadFile,
-			);
-			if (uploadResult === "error") return false;
-
 			// 非同期 await 中に並行 handleAdd が挿入を終えている
 			// 可能性があるため、挿入直前の状態で上限を再チェックする
 			if (!checkMaxImages()) return false;
 
 			const newTempId = generateTempId();
-			const uploadedUrl =
-				typeof uploadResult === "object" ? uploadResult.uploadedUrl : undefined;
-			const newImage = ImageUtils.createNew(
-				newTempId,
-				processedFile,
-				uploadedUrl,
-			);
+			const newImage = ImageUtils.createNew(newTempId, processedFile);
 
 			const ad = adapterRef.current;
 			const result = ops.addImage(ad.images, newImage);
 			ad.setImages(result.images);
 
+			startUpload(newTempId, processedFile);
+
 			await safeValidate();
 			return true;
 		},
-		[checkMaxImages, executeProcessFile, executeUploadFile, msg, safeValidate],
+		[checkMaxImages, executeProcessFile, msg, safeValidate, startUpload],
 	);
 
 	const handleFileChange = useCallback(
@@ -199,12 +501,6 @@ export function useMultiImageCore(
 			);
 			if (!processedFile) return false;
 
-			const uploadResult = await executeUploadFile(
-				processedFile,
-				msg.uploadFile,
-			);
-			if (uploadResult === "error") return false;
-
 			// 非同期 await 中に並行操作で削除・移動されている可能性が
 			// あるため、await 前の index は使わず tempId から再解決する
 			const index = getImageIndexByTempId(tempId);
@@ -212,15 +508,11 @@ export function useMultiImageCore(
 
 			const ad = adapterRef.current;
 			const targetImage = ad.images[index];
-			const uploadedUrl =
-				typeof uploadResult === "object" ? uploadResult.uploadedUrl : undefined;
 
 			if (targetImage.status === ImageFormStatus.Existing) {
-				const deletedImage = ImageUtils.markDelete(targetImage);
-				const newImage = ImageUtils.createNew(
-					generateTempId(),
+				const { deletedImage, newImage } = ImageUtils.replaceExisting(
+					targetImage,
 					processedFile,
-					uploadedUrl,
 				);
 				const result = ops.replaceExistingImage(
 					ad.images,
@@ -229,14 +521,17 @@ export function useMultiImageCore(
 					newImage,
 				);
 				ad.setImages(result.images);
+				startUpload(newImage.tempId, processedFile);
 			} else if (targetImage.status === ImageFormStatus.New) {
-				const newImage = ImageUtils.createNew(
-					targetImage.tempId,
+				const newImage = ImageUtils.updateNewImageFile(
+					targetImage,
 					processedFile,
-					uploadedUrl,
 				);
 				const result = ops.updateNewFile(ad.images, index, newImage);
 				ad.setImages(result.images);
+				// 明示的な差し替えは仕切り直し。tripwire のカウントも解除する
+				selfDiscardsRef.current.delete(targetImage.tempId);
+				startUpload(targetImage.tempId, processedFile);
 			} else {
 				// await 中の handleDelete / replaceExisting で ToBeDeleted 化されたケース。
 				// markDelete は tempId を保持するため index 再解決では検出できずここに到達する。
@@ -251,11 +546,11 @@ export function useMultiImageCore(
 		},
 		[
 			executeProcessFile,
-			executeUploadFile,
 			getImageIndexByTempId,
 			msg,
 			onError,
 			safeValidate,
+			startUpload,
 		],
 	);
 
@@ -274,6 +569,12 @@ export function useMultiImageCore(
 			} else if (image.status === ImageFormStatus.New) {
 				const result = ops.removeNewImage(ad.images, index);
 				ad.setImages(result.images);
+				// 項目が消える唯一の経路。台帳を残すと失敗済み項目を削除しても
+				// uploads.wait が失敗を報告し続ける
+				const rec = recordsRef.current.get(tempId);
+				if (rec?.status === "pending") rec.controller.abort();
+				selfDiscardsRef.current.delete(tempId);
+				writeRecords((draft) => draft.delete(tempId));
 			} else {
 				// ToBeDeleted の再削除は no-op。削除済み項目への削除は UI 上の
 				// 二重クリック等で自然に起こりうる操作であり、エラー通知はノイズになるため
@@ -284,7 +585,7 @@ export function useMultiImageCore(
 			await safeValidate();
 			return true;
 		},
-		[getImageIndexByTempId, safeValidate],
+		[getImageIndexByTempId, safeValidate, writeRecords],
 	);
 
 	const handleMove = useCallback(
@@ -308,14 +609,356 @@ export function useMultiImageCore(
 		[handleAdd, handleFileChange, handleDelete, handleMove],
 	);
 
-	const itemsWithErrors = useMemo<ImageWithErrors[]>(() => {
+	/**
+	 * 転送済みの参照を返す。フォーム state を優先し、無ければ台帳で補う。
+	 *
+	 * ImageFieldAdapter は setImages の反映が同期であることを契約していないため、
+	 * 反映を次のレンダーまで遅らせる実装では書き戻し直後の adapter.images が
+	 * まだ uploadRef を持たない。台帳で補ってこの遅延を吸収する。台帳が消える
+	 * remount 後はフォーム state だけが判定材料になり、判定が縮退しても嘘をつかない。
+	 *
+	 * items の表示用マージも uploads.wait の判定もこの 1 つの関数を通す。
+	 * 供給源が分かれると「items 上は見えるのに wait は失敗する」が起こる
+	 */
+	const resolveUploadRef = useCallback(
+		(image: ImageNew): string | undefined => {
+			if (image.uploadRef !== undefined) return image.uploadRef;
+			const rec = recordsRef.current.get(image.tempId);
+			if (rec?.status === "done" && rec.file === image.file) {
+				return rec.uploadRef;
+			}
+			return undefined;
+		},
+		[],
+	);
+
+	/** 解決済みの uploadRef を載せた表示・送信用の画像を返す */
+	const withResolvedRef = useCallback(
+		(image: Image): Image => {
+			if (image.status !== ImageFormStatus.New) return image;
+			const uploadRef = resolveUploadRef(image);
+			return uploadRef === undefined ? image : { ...image, uploadRef };
+		},
+		[resolveUploadRef],
+	);
+
+	const listUnresolved = useCallback((): ImageNew[] => {
+		return adapterRef.current.images.filter(
+			(img): img is ImageNew =>
+				img.status === ImageFormStatus.New &&
+				resolveUploadRef(img) === undefined,
+		);
+	}, [resolveUploadRef]);
+
+	/** 未転送の new 項目へ転送を発行する */
+	const reissueUnresolved = useCallback(() => {
+		for (const img of listUnresolved()) {
+			// tripwire が落ちた項目は自動再発行しない。retry かファイル差し替えで解除する
+			if (
+				(selfDiscardsRef.current.get(img.tempId) ?? 0) >= SELF_DISCARD_LIMIT
+			) {
+				continue;
+			}
+			const rec = recordsRef.current.get(img.tempId);
+			// 走行中なら File が違っても発行しない。1 項目に生きた転送は 1 本という
+			// 制約を保つため。走行中の転送が対象を失っていれば、settle 時に自己破棄と
+			// 判定されて台帳から落ち、次の照合で現在の File に対して発行される
+			if (rec?.status === "pending") continue;
+			// 失敗済みは自動再試行せず retry に委ねる。ただし現在の File 基準で判定する。
+			// 台帳が別の File のものならこの項目にとっては未着手であり、
+			// 発行しないと永久に未転送のまま残る
+			if (rec?.status === "failed" && rec.file === img.file) continue;
+			startUpload(img.tempId, img.file);
+		}
+	}, [listUnresolved, startUpload]);
+
+	/**
+	 * 送信素材を組む。表示順は配列の順序で表すので order は付けず、削除対象は
+	 * 配列から外して deletedIds へ分ける。転送済みの参照は台帳で補うため、
+	 * フォーム state への反映を待たずに確定できる。
+	 *
+	 * 差し替えで生まれた項目を除外するときは、元画像を除外された項目の位置へ戻す。
+	 * 削除を取り消すだけでは足りない。「配列に無いものは削除」と解釈する API では、
+	 * images にも deletedIds にも居ない画像はやはり削除されるため
+	 */
+	const buildPayload = useCallback(
+		(
+			excluded?: ReadonlySet<string>,
+		): { images: SubmitImage[]; deletedIds: string[] } => {
+			const source = adapterRef.current.images;
+			const byTempId = new Map(source.map((img) => [img.tempId, img]));
+			const originalOf = (image: ImageNew) =>
+				image.replacesTempId === undefined
+					? undefined
+					: byTempId.get(image.replacesTempId);
+
+			// 元画像を戻す判定を先に済ませる。ToBeDeleted は差し替え後の項目より
+			// 後ろに置かれるが、配列の並びに依存させない
+			const restoredTempIds = new Set<string>();
+			if (excluded !== undefined) {
+				for (const img of source) {
+					if (img.status !== ImageFormStatus.New) continue;
+					if (!excluded.has(img.tempId)) continue;
+					const original = originalOf(img);
+					if (original?.status === ImageFormStatus.ToBeDeleted) {
+						restoredTempIds.add(original.tempId);
+					}
+				}
+			}
+
+			const images: SubmitImage[] = [];
+			const deletedIds: string[] = [];
+			for (const img of source) {
+				if (img.status === ImageFormStatus.ToBeDeleted) {
+					if (restoredTempIds.has(img.tempId)) continue;
+					deletedIds.push(img.id);
+					continue;
+				}
+				if (img.status === ImageFormStatus.Existing) {
+					images.push({ id: img.id });
+					continue;
+				}
+				if (excluded?.has(img.tempId)) {
+					const original = originalOf(img);
+					if (original?.status === ImageFormStatus.ToBeDeleted) {
+						images.push({ id: original.id });
+					}
+					continue;
+				}
+				const uploadRef = resolveUploadRef(img);
+				// uploadFile を設定しない consumer では転送が起きないので、
+				// 転送そのものを消費側に委ねる形（File を渡す）になる
+				images.push(
+					uploadRef === undefined
+						? { file: img.file, tempId: img.tempId }
+						: { uploadRef },
+				);
+			}
+			return { images, deletedIds };
+		},
+		[resolveUploadRef],
+	);
+
+	const getReady = useCallback((): ReadyImages => {
+		if (!uploadFileRef.current) {
+			// 転送しない構成では uploadRef が無いのが正常。除外対象として扱うと
+			// new 項目が全部消える
+			return { ...buildPayload(), excludedTempIds: [] };
+		}
+		// 未完了の項目を送信素材から抜く。項目自体はフォームに残る。
+		// 走行中のものは転送が続き、未着手のものは reconciliation effect が
+		// 発行するので次回の保存に入るが、失敗済みのものは自動再試行しない
+		// ため uploads.retry を呼ぶまで除外され続ける
+		const excludedTempIds = listUnresolved().map((img) => img.tempId);
+		return {
+			...buildPayload(new Set(excludedTempIds)),
+			excludedTempIds,
+		};
+	}, [buildPayload, listUnresolved]);
+
+	const wait = useCallback(async (): Promise<UploadWaitResult> => {
+		if (!uploadFileRef.current) {
+			// 未設定の consumer では uploadRef が無いのが正常。失敗扱いすると
+			// 一度も転送を試みていない項目が failedTempIds に並ぶ
+			return { ok: true, ...buildPayload() };
+		}
+
+		// 収束ループ。待機開始時点のスナップショットだけを await すると、
+		// 待機中に retry や reconciliation が始めた転送が待ち対象から漏れる
+		const snapshot = () =>
+			`${listUnresolved()
+				.map((i) => i.tempId)
+				.join(",")}|${[...recordsRef.current]
+				.filter(([, rec]) => rec.status === "failed")
+				.map(([tempId]) => tempId)
+				.join(",")}`;
+
+		// 進捗の無い周回が 2 回続いたら打ち切る。1 回で打ち切ると、待機中に
+		// ユーザーがファイルを選び直したケースを誤検知する。差し替えの周回は
+		// 「元の転送が中断され、新しい転送はまだ結果を出していない」ため進捗なしに
+		// 見えるが、次の周回では新しい転送が解決して進捗が出る
+		let stalledRounds = 0;
+
+		for (;;) {
+			const before = snapshot();
+			reissueUnresolved();
+
+			// 待つのはフォームに残っている項目の転送だけ。handlers を介さない
+			// 差し替え（form.reset や adapter.setImages への直接書き込み）で項目が
+			// 消えると、その転送の結果は書き戻し時に捨てられる。ok 判定と素材が
+			// adapter.images から出ているので、待機集合も同じ供給源に揃える
+			const alive = new Set(adapterRef.current.images.map((img) => img.tempId));
+			const inflight: Promise<void>[] = [];
+			for (const [tempId, rec] of recordsRef.current) {
+				if (rec.status === "pending" && alive.has(tempId)) {
+					inflight.push(rec.settled);
+				}
+			}
+			if (inflight.length > 0) {
+				await Promise.allSettled(inflight);
+				stalledRounds = snapshot() === before ? stalledRounds + 1 : 0;
+				// 転送は走ったのに未解決も失敗も動かない状態が続くなら、
+				// これ以上回しても変わらない。契約違反の adapter による
+				// ライブロックを可視の失敗へ変換する
+				if (stalledRounds >= STALLED_ROUND_LIMIT) {
+					// await 中に reconciliation が再発行していることがある。走行中の
+					// 転送を failed で塗ると、その結果が破棄されて無駄撃ちになる
+					const stuck = listUnresolved().filter(
+						(img) => recordsRef.current.get(img.tempId)?.status !== "pending",
+					);
+					if (stuck.length === 0) {
+						stalledRounds = 0;
+						continue;
+					}
+					// 台帳にも失敗として残す。ここで返るだけだと uploads.failed が空のまま
+					// になり、消費側が該当項目を提示することも retry することもできない
+					writeRecords((draft) => {
+						let changed = false;
+						for (const img of stuck) {
+							// 既に失敗している項目の error は原因を持っているので温存する。
+							// ライブロックの説明で塗ると消費側に無関係な理由を見せることになる
+							if (draft.get(img.tempId)?.status === "failed") continue;
+							draft.set(img.tempId, {
+								status: "failed",
+								file: img.file,
+								error: new Error(
+									"upload made no progress; the adapter may not preserve File references",
+								),
+							});
+							changed = true;
+						}
+						return changed;
+					});
+					return {
+						ok: false,
+						failedTempIds: stuck.map((img) => img.tempId),
+					};
+				}
+				continue;
+			}
+
+			const failedTempIds = listUnresolved().map((img) => img.tempId);
+			if (failedTempIds.length > 0) return { ok: false, failedTempIds };
+			return { ok: true, ...buildPayload() };
+		}
+	}, [buildPayload, listUnresolved, reissueUnresolved, writeRecords]);
+
+	const retry = useCallback(
+		async (tempId: string): Promise<boolean> => {
+			// pending 中の再実行を許すと同一 File の転送が 2 本 in-flight になり、
+			// File 同一性比較では区別できず両方が書き戻しに成功してしまう
+			if (recordsRef.current.get(tempId)?.status !== "failed") return false;
+
+			const image = adapterRef.current.images.find(
+				(img) => img.tempId === tempId,
+			);
+			if (image === undefined || image.status !== ImageFormStatus.New) {
+				return false;
+			}
+
+			// 明示的なリトライは仕切り直し。tripwire のカウントも解除する
+			selfDiscardsRef.current.delete(tempId);
+			startUpload(tempId, image.file);
+			const started = recordsRef.current.get(tempId);
+			if (started?.status === "pending") await started.settled;
+			return recordsRef.current.get(tempId)?.status === "done";
+		},
+		[startUpload],
+	);
+
+	// フォーム state から消えた項目の台帳を落とす。handlers を介さない差し替え
+	// （form.reset や adapter.setImages への直接書き込み）で項目が消えると、
+	// その項目の failed が uploads.failed に残り続け、消費側は items で引けず
+	// retry でも消せない状態になる。
+	//
+	// 「一度フォーム state で見た tempId」だけを対象にする。ImageFieldAdapter は
+	// setImages の同期反映を契約していないので、単に「今の images に無い」で判定すると
+	// 追加直後の転送を反映待ちの間に中断してしまう
+	const seenTempIdsRef = useRef(new Set<string>());
+	const pruneOrphans = useCallback(() => {
+		const alive = new Set(adapterRef.current.images.map((img) => img.tempId));
+		const seen = seenTempIdsRef.current;
+		for (const tempId of alive) seen.add(tempId);
+
+		writeRecords((draft) => {
+			let changed = false;
+			for (const [tempId, rec] of draft) {
+				if (alive.has(tempId) || !seen.has(tempId)) continue;
+				if (rec.status === "pending") rec.controller.abort();
+				draft.delete(tempId);
+				selfDiscardsRef.current.delete(tempId);
+				seen.delete(tempId);
+				changed = true;
+			}
+			return changed;
+		});
+	}, [writeRecords]);
+
+	// uploadRef の無い new 項目が現れたら転送を発行する。unmount で in-flight と
+	// 台帳は失われるがフォーム state には項目が残るため、remount や初期値の後差し込みでも
+	// 「転送されないまま uploads.wait が ok を返す」状態にならない。
+	//
+	// records も依存に含める。中断された転送は settle 時に台帳から落ちるため、
+	// これが無いと StrictMode の cleanup で中断された転送が開発時だけ再開されない。
+	// hasUploadFile も含める。undefined の間に追加された項目は startUpload が
+	// 即 return するため、後から uploadFile が渡されたときに拾い直す必要がある
+	// biome-ignore lint/correctness/useExhaustiveDependencies: pruneOrphans / reissueUnresolved は adapterRef / recordsRef 経由で読むため依存に現れないが、発火させたいのは画像と台帳と uploadFile の有無が変わったとき
+	useEffect(() => {
+		pruneOrphans();
+		reissueUnresolved();
+	}, [adapter.images, records, hasUploadFile, pruneOrphans, reissueUnresolved]);
+
+	// unmount 時のみ中断する。結果は破棄され、再発行は reissueUnresolved を呼ぶ
+	// reconciliation effect と uploads.wait が担う。
+	//
+	// 中断した転送は settle を待たずに台帳から落とす。abort した時点でその転送に
+	// 用は無いのに枠を占有させると、signal を無視する実装（settle が遅い・返らない）で
+	// StrictMode の再 mount 後に転送が再開されなくなる
+	useEffect(() => {
+		return () => {
+			writeRecords((draft) => {
+				let changed = false;
+				for (const [tempId, rec] of draft) {
+					if (rec.status !== "pending") continue;
+					rec.controller.abort();
+					draft.delete(tempId);
+					changed = true;
+				}
+				return changed;
+			});
+		};
+	}, [writeRecords]);
+
+	const uploads = useMemo<UploadsApi>(() => {
+		const pending: string[] = [];
+		const failed: string[] = [];
+		for (const [tempId, rec] of records) {
+			if (rec.status === "pending") pending.push(tempId);
+			if (rec.status === "failed") failed.push(tempId);
+		}
+		return { pending, failed, retry, wait, getReady };
+	}, [records, retry, wait, getReady]);
+
+	const items = useMemo<ImageItem[]>(() => {
 		return adapter.images
-			.map((image, originalIndex) => ({
-				image,
-				errors: adapter.errors.items[originalIndex],
-			}))
+			.map((image, originalIndex) => {
+				const rec = records.get(image.tempId);
+				return {
+					image: withResolvedRef(image),
+					errors: adapter.errors.items[originalIndex],
+					uploadState:
+						rec?.status === "pending"
+							? ({
+									status: "pending",
+									progress: progress.get(image.tempId),
+								} satisfies UploadState)
+							: rec?.status === "failed"
+								? ({ status: "failed", error: rec.error } satisfies UploadState)
+								: undefined,
+				};
+			})
 			.filter((item) => item.image.status !== ImageFormStatus.ToBeDeleted);
-	}, [adapter.images, adapter.errors]);
+	}, [adapter.images, adapter.errors, records, progress, withResolvedRef]);
 
 	const raw = useMemo(
 		() => ({ watchedImages: adapter.images }),
@@ -323,9 +966,10 @@ export function useMultiImageCore(
 	);
 
 	return {
-		itemsWithErrors,
+		items,
 		rootErrors: adapter.errors.root,
 		handlers,
+		uploads,
 		raw,
 	};
 }

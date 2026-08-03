@@ -1,6 +1,7 @@
 import {
 	type Image,
 	ImageFormStatus,
+	type UploadState,
 	useImagePreviewUrl,
 } from "@curry-battle/react-multiple-image-form-manager";
 
@@ -13,6 +14,9 @@ interface Props {
 	isFirst: boolean;
 	isLast: boolean;
 	error: string | undefined;
+	/** 転送中・失敗のときだけ値を持つ。完了は image.uploadRef の有無から導出する */
+	uploadState: UploadState | undefined;
+	onRetry: (tempId: string) => void;
 }
 
 export function FormMultiImageItem({
@@ -24,6 +28,8 @@ export function FormMultiImageItem({
 	isFirst,
 	isLast,
 	error,
+	uploadState,
+	onRetry,
 }: Props) {
 	const previewUrl = useImagePreviewUrl(image);
 
@@ -44,6 +50,25 @@ export function FormMultiImageItem({
 					{image.status === ImageFormStatus.New ? "新規画像" : "既存画像"}
 				</p>
 				<p className="text-xs text-gray-400">Order: {index}</p>
+				{uploadState?.status === "pending" && (
+					<p className="text-xs text-blue-600 mt-1">
+						アップロード中
+						{uploadState.progress !== undefined &&
+							` ${Math.floor(uploadState.progress * 100)}%`}
+					</p>
+				)}
+				{uploadState?.status === "failed" && (
+					<p className="text-xs text-red-500 mt-1">
+						アップロードに失敗しました
+						<button
+							type="button"
+							onClick={() => onRetry(image.tempId)}
+							className="ml-2 underline"
+						>
+							再試行
+						</button>
+					</p>
+				)}
 				{error && <p className="text-xs text-red-500 mt-1">{error}</p>}
 			</div>
 
