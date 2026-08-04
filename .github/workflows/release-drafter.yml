@@ -1,11 +1,12 @@
 name: Release Drafter
 
+# PR イベントでは起動しない。releaser は起動のたびに Draft Release を作り直すため、
+# publish ワークフローが設定した target が PR イベントで巻き戻る。
+# v7.5.1 に releaser だけを止める入力は無いので、トリガー自体を main への push に限る。
 on:
   push:
     branches:
       - main
-  pull_request_target:
-    types: [opened, reopened, synchronize, edited]
 
 permissions:
   contents: read
@@ -14,7 +15,7 @@ jobs:
   update_release_draft:
     permissions:
       contents: write
-      pull-requests: write
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
