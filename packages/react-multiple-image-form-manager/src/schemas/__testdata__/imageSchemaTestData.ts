@@ -1,5 +1,7 @@
 export const validUUID = "019415a9-7c6c-7bf0-9c0f-1a2b3c4d5e6f";
 export const validHttpsUrl = "https://s3.example.com/img.jpg";
+/** uploadFile が URL ではなく登録 API 用のトークンを返す構成 */
+export const validOpaqueUploadRef = "upload_01JABCDEF0123456789";
 
 export const makeJpegFile = (name = "photo.jpg") =>
 	new File(["data"], name, { type: "image/jpeg" });
@@ -21,7 +23,7 @@ export const validNewImage = {
 	id: undefined,
 	file: makeJpegFile(),
 	previewUrl: undefined,
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 };
 
 export const validExistingImage = {
@@ -49,7 +51,7 @@ export const validMixedImages = [
 		id: undefined,
 		file: makeJpegFile("a.jpg"),
 		previewUrl: undefined,
-		uploadedUrl: undefined,
+		uploadRef: undefined,
 	},
 	{
 		tempId: "temp_existing",
@@ -77,7 +79,7 @@ export const invalidNewImageWithPng = {
 	id: undefined,
 	file: makePngFile(),
 	previewUrl: undefined,
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 };
 
 export const invalidNewImageWithoutFile = {
@@ -85,7 +87,7 @@ export const invalidNewImageWithoutFile = {
 	status: "new" as const,
 	id: undefined,
 	previewUrl: undefined,
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 };
 
 export const invalidExistingWithBadId = {
@@ -114,35 +116,55 @@ export const invalidImageWithBadStatus = {
 	uploadedUrl: validHttpsUrl,
 };
 
-export const validNewImageWithUploadedUrl = {
+export const validNewImageWithUrlUploadRef = {
 	tempId: "temp_uploaded",
 	status: "new" as const,
 	id: undefined,
 	file: makeJpegFile(),
 	previewUrl: undefined,
-	uploadedUrl: validHttpsUrl,
+	uploadRef: validHttpsUrl,
 };
 
-export const invalidNewImageWithBadUploadedUrl = {
-	tempId: "temp_bad_url",
+export const validNewImageWithOpaqueUploadRef = {
+	tempId: "temp_token",
 	status: "new" as const,
 	id: undefined,
 	file: makeJpegFile(),
 	previewUrl: undefined,
-	uploadedUrl: "not-a-url",
+	uploadRef: validOpaqueUploadRef,
+};
+
+/** 差し替えで生まれた項目。スキーマから replacesTempId が落ちると対応が消える */
+export const validNewImageWithReplacesTempId = {
+	tempId: "temp_replacement",
+	status: "new" as const,
+	id: undefined,
+	file: makeJpegFile(),
+	previewUrl: undefined,
+	uploadRef: undefined,
+	replacesTempId: "temp_original",
+};
+
+export const invalidNewImageWithEmptyUploadRef = {
+	tempId: "temp_empty_ref",
+	status: "new" as const,
+	id: undefined,
+	file: makeJpegFile(),
+	previewUrl: undefined,
+	uploadRef: "",
 };
 
 // --- builders for option-specific tests ---
 
 export const makeNewImageData = (
-	overrides: { tempId?: string; file?: File; uploadedUrl?: string } = {},
+	overrides: { tempId?: string; file?: File; uploadRef?: string } = {},
 ) => ({
 	tempId: overrides.tempId ?? "temp_1",
 	status: "new" as const,
 	id: undefined,
 	file: overrides.file ?? makeJpegFile(),
 	previewUrl: undefined,
-	uploadedUrl: overrides.uploadedUrl ?? undefined,
+	uploadRef: overrides.uploadRef ?? undefined,
 });
 
 export const makeToBeDeletedImageData = (

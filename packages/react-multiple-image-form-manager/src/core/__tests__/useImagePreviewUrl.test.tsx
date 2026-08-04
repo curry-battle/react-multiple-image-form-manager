@@ -11,7 +11,7 @@ const makeNew = (name = "a.jpg"): ImageNew => ({
 	status: ImageFormStatus.New,
 	id: undefined,
 	file: new File(["data"], name, { type: "image/jpeg" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 });
 
 const makeExisting = (): ImageExisting => ({

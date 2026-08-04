@@ -70,6 +70,23 @@ describe("normalizeTanstackErrors", () => {
 		expect(r.items[2]?.previewUrl?.message).toBe("bad url");
 	});
 
+	it("errorMap with uploadRef error → items[0].uploadRef populated", () => {
+		// 未知キーは root へ回る実装なので、uploadRef が漏れると項目単位の
+		// エラーとして表示できなくなる
+		const r = normalizeTanstackErrors({
+			errorMap: {
+				onChange: {
+					"images[0].uploadRef": [{ message: "empty ref" }],
+				},
+			},
+			metaErrors: [],
+			fieldName: "images",
+			length: 1,
+		});
+		expect(r.items[0]?.uploadRef?.message).toBe("empty ref");
+		expect(r.root).toHaveLength(0);
+	});
+
 	it("errorMap with unknown field keys → ignored (not placed in items)", () => {
 		const r = normalizeTanstackErrors({
 			errorMap: {

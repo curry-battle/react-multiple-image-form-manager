@@ -44,6 +44,15 @@ describe("normalizeRhfErrors", () => {
 		expect(result.items[2]).toBeUndefined();
 	});
 
+	it("array item with uploadRef error -> items[0].uploadRef has message", () => {
+		// new 項目の転送先参照はスキーマ検証の対象。ここで落とすと項目単位の
+		// エラーとして表示できなくなる
+		const input = [{ uploadRef: { message: "empty ref", type: "too_small" } }];
+		const result = normalizeRhfErrors(input);
+
+		expect(result.items[0]?.uploadRef?.message).toBe("empty ref");
+	});
+
 	it("array item with file error -> items[0].file has message", () => {
 		const input = [{ file: { message: "required", type: "required" } }];
 		const result = normalizeRhfErrors(input);

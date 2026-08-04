@@ -14,7 +14,24 @@ export type ImageNew = ImageBase & {
 	// blob URL は state より寿命が短いため保存せず、表示側で file から導出する
 	// （理由の詳細は useImagePreviewUrl の doc を参照）
 	previewUrl?: undefined;
-	uploadedUrl?: string;
+	/**
+	 * uploadFile が返した転送先の参照。URL とは限らない。
+	 *
+	 * 恒久ストレージへ直接置く構成では URL になるが、一時領域へ置いて登録 API に
+	 * 引き渡す構成では不透明なトークンになる。表示に使える保証が無いため
+	 * previewUrl とは別物として扱い、URL 検証もかけない
+	 */
+	uploadRef?: string;
+	/**
+	 * この項目が差し替えた既存画像の tempId（差し替えで生まれた項目のみ）。
+	 *
+	 * 既存画像の差し替えは「元画像を ToBeDeleted にする + 新規項目を足す」の 2 つに
+	 * 分かれるため、対応関係が配列から復元できない。転送の完了を待たずに送信素材を
+	 * 作る uploads.getReady は、この項目を除外するときに元画像の削除も取り消す必要が
+	 * あり、そのためにリンクを永続させる。フック内に持つと remount で失われ、
+	 * 「元画像が消えて差し替え後も入らない」状態が復活する
+	 */
+	replacesTempId?: string;
 };
 
 export type ImageExisting = ImageBase & {
@@ -37,17 +54,78 @@ export type ImageToBeDeleted = ImageBase & {
 
 export type Image = ImageNew | ImageExisting | ImageToBeDeleted;
 
-export type ImageForSubmit =
-	| ((ImageNew | ImageExisting) & { order: number })
-	| (ImageToBeDeleted & { order?: undefined });
+/** 転送が完了し uploadRef が確定した新規画像 */
+export type ImageUploaded = ImageNew & { uploadRef: string };
+
+/**
+ * 送信素材。`uploads.wait` / `uploads.getReady` が可視順の配列で返す。
+ *
+ * フォーム state の union をそのまま持ち上げず、送信に要る値だけを残す。
+ * 表示順は配列の順序で表し、order フィールドは持たない。削除対象は配列に含めず
+ * `deletedIds` へ分ける。「配列に無いものは削除」と宣言する API へはそのまま渡せ、
+ * 削除を明示する API へは `deletedIds` を足せばよい。
+ */
+export type UploadedSubmitImage = { id: string } | { uploadRef: string };
+
+/**
+ * uploadFile を設定しない場合の送信素材。転送は消費側が行うので File を渡す。
+ *
+ * File 側にだけ tempId を載せる。`{ id }` や `{ uploadRef }` はそのままサーバへ
+ * 送る値なので相関キーを混ぜないが、`{ file }` は消費側が必ず自分で転送するため、
+ * 失敗した項目をユーザーへ指し示すキーが要る
+ */
+export type LocalSubmitImage = { id: string } | { file: File; tempId: string };
+
+/**
+ * `uploadFile` の有無が型で確定しない経路（render-props など）で出る送信素材。
+ *
+ * 実行時にはどちらか一方の形しか現れない。確定した型が要る場合はフックを直接使う
+ */
+export type SubmitImage = UploadedSubmitImage | LocalSubmitImage;
 
 export type ProcessFileFn = (file: File) => Promise<File>;
 
 export type UploadFileResult = {
-	uploadedUrl: string;
+	uploadRef: string;
 };
 
-export type UploadFileFn = (file: File) => Promise<UploadFileResult>;
+/**
+ * 転送の中断要求と進捗の報告口。
+ *
+ * signal はライブラリ→消費側、onProgress は消費側→ライブラリで、どちらも
+ * 「チャネルを載せる。同一性は載せない」線の内側にある。転送がどの項目のものかを
+ * 消費側に知らせないため、相関はライブラリ内部に閉じる。
+ *
+ * signal は unmount 時や同一項目のファイル差し替え時に abort される。
+ * 無視しても結果は破棄されるため、実害は無駄な転送に留まる。
+ */
+export type UploadFileContext = {
+	signal: AbortSignal;
+	/**
+	 * 転送の進捗を 0..1 で報告する。非有限値は無視され、範囲外の値は 0..1 に丸められる。
+	 *
+	 * 呼ぶ頻度に制限は無い。整数パーセントが変わらない報告は再レンダーを
+	 * 起こさないため、チャンクごとに呼んで構わない。
+	 * 残り時間の推定はライブラリでは行わない（進捗と経過時間から消費側が出す）
+	 */
+	onProgress: (fraction: number) => void;
+};
+
+/**
+ * 選択されたファイルをストレージへ転送する。
+ *
+ * **返す promise は必ず settle すること。** `uploads.wait` は走行中の転送が
+ * settle するまで待つため、`ctx.signal` を無視した上で解決も棄却もしない実装だと
+ * 保存が返らなくなる。中断できないなら、せめてタイムアウトで棄却すること。
+ *
+ * ctx は optional にしない。ライブラリは常に渡すため、optional は signal を
+ * 使う実装に無意味な `ctx?.signal` ガードを強いるだけになる。引数を使わない
+ * 実装は `(file) => ...` と書けばよく、少ない引数の関数は代入可能。
+ */
+export type UploadFileFn = (
+	file: File,
+	ctx: UploadFileContext,
+) => Promise<UploadFileResult>;
 
 // functions
 
@@ -61,25 +139,34 @@ export const generateTempId = (): string => {
 
 export const ImageUtils = {
 	// 新規作成
-	createNew: (tempId: string, file: File, uploadedUrl?: string): ImageNew => {
+	createNew: (tempId: string, file: File, uploadRef?: string): ImageNew => {
 		return {
 			tempId,
 			id: undefined,
 			status: ImageFormStatus.New,
 			file,
-			...(uploadedUrl !== undefined && { uploadedUrl }),
+			...(uploadRef !== undefined && { uploadRef }),
 		};
 	},
 	// 新規作成中のファイルを差し替え（tempId を保持して作り直す）
-	updateNewImageFile: (image: ImageNew, newFile: File): ImageNew =>
-		ImageUtils.createNew(image.tempId, newFile),
+	updateNewImageFile: (image: ImageNew, newFile: File): ImageNew => ({
+		...ImageUtils.createNew(image.tempId, newFile),
+		// 差し替えで生まれた項目のファイルをさらに選び直しても、元画像との
+		// 対応は維持する
+		...(image.replacesTempId !== undefined && {
+			replacesTempId: image.replacesTempId,
+		}),
+	}),
 	// 既存画像を新しいファイルで差し替え
 	replaceExisting: (
 		existingImage: ImageExisting,
 		newFile: File,
 	): { deletedImage: ImageToBeDeleted; newImage: ImageNew } => {
 		const deletedImage = ImageUtils.markDelete(existingImage);
-		const newImage = ImageUtils.createNew(generateTempId(), newFile);
+		const newImage: ImageNew = {
+			...ImageUtils.createNew(generateTempId(), newFile),
+			replacesTempId: existingImage.tempId,
+		};
 
 		return { deletedImage, newImage };
 	},
@@ -93,20 +180,31 @@ export const ImageUtils = {
 			uploadedUrl: image.uploadedUrl,
 		};
 	},
-	// 送信用に可視順の連番 order を付与（ToBeDeleted はスキップ）
-	computeImagesForSubmit: (images: Image[]): ImageForSubmit[] => {
-		let count = 0;
-		return images.map((img): ImageForSubmit => {
-			if (img.status === ImageFormStatus.ToBeDeleted) {
-				return { ...img, order: undefined };
-			}
-			return { ...img, order: count++ };
-		});
+	/**
+	 * 登録が確定した new 画像を existing へ昇格させる。
+	 *
+	 * 引数の型が「転送完了済みでなければ昇格できない」という前提を表現する。
+	 * previewUrl / uploadedUrl を必須にしているのは、uploadRef が不透明トークンの
+	 * 場合に URL を導出できないため。省略を許すと、表示できない値が previewUrl に
+	 * 入った ImageExisting（画像が壊れて見える状態）を作れてしまう
+	 */
+	markSaved: (
+		image: ImageUploaded,
+		params: { id: string; previewUrl: string; uploadedUrl: string },
+	): ImageExisting => {
+		return {
+			tempId: image.tempId,
+			id: params.id,
+			status: ImageFormStatus.Existing,
+			file: undefined,
+			previewUrl: params.previewUrl,
+			uploadedUrl: params.uploadedUrl,
+		};
 	},
 };
 
 if (import.meta.vitest) {
-	const { describe, it, expect, expectTypeOf } = import.meta.vitest;
+	const { describe, it, expect } = import.meta.vitest;
 
 	// --- Test Helpers ---
 	const makeNew = (overrides?: Partial<ImageNew>): ImageNew => ({
@@ -114,7 +212,7 @@ if (import.meta.vitest) {
 		status: ImageFormStatus.New,
 		id: undefined,
 		file: new File(["data"], "test.jpg", { type: "image/jpeg" }),
-		uploadedUrl: undefined,
+		uploadRef: undefined,
 		...overrides,
 	});
 
@@ -124,18 +222,6 @@ if (import.meta.vitest) {
 		id: "00000000-0000-7000-8000-000000000001",
 		previewUrl: "https://s3.example.com/img.jpg",
 		uploadedUrl: "https://s3.example.com/img.jpg",
-		file: undefined,
-		...overrides,
-	});
-
-	const makeToBeDeleted = (
-		overrides?: Partial<ImageToBeDeleted>,
-	): ImageToBeDeleted => ({
-		tempId: "temp_test-deleted",
-		status: ImageFormStatus.ToBeDeleted,
-		id: "00000000-0000-7000-8000-000000000002",
-		previewUrl: "https://s3.example.com/deleted.jpg",
-		uploadedUrl: "https://s3.example.com/deleted.jpg",
 		file: undefined,
 		...overrides,
 	});
@@ -155,60 +241,6 @@ if (import.meta.vitest) {
 	});
 
 	describe("ImageUtils", () => {
-		describe("computeImagesForSubmit", () => {
-			it("空配列 → 空配列", () => {
-				expect(ImageUtils.computeImagesForSubmit([])).toEqual([]);
-			});
-
-			it("New/Existing のみ → 0, 1, 2... と連番order", () => {
-				const images: Image[] = [makeNew(), makeExisting()];
-				const result = ImageUtils.computeImagesForSubmit(images);
-				expect(result.map((r) => r.order)).toEqual([0, 1]);
-			});
-
-			it("ToBeDeleted → order: undefined", () => {
-				const images: Image[] = [makeToBeDeleted()];
-				const result = ImageUtils.computeImagesForSubmit(images);
-				expect(result[0]?.order).toBeUndefined();
-			});
-
-			it("混合配列: ToBeDeletedをスキップして連番", () => {
-				const images: Image[] = [
-					makeNew(),
-					makeToBeDeleted(),
-					makeExisting(),
-					makeNew({ tempId: "temp_another" }),
-				];
-				const result = ImageUtils.computeImagesForSubmit(images);
-				expect(result.map((r) => r.order)).toEqual([0, undefined, 1, 2]);
-			});
-
-			it("全てToBeDeleted → 全てundefined", () => {
-				const images: Image[] = [makeToBeDeleted(), makeToBeDeleted()];
-				const result = ImageUtils.computeImagesForSubmit(images);
-				expect(result.every((r) => r.order === undefined)).toBe(true);
-			});
-
-			it("元配列を変更しないこと", () => {
-				const images: Image[] = [makeNew(), makeExisting()];
-				const original = [...images];
-				ImageUtils.computeImagesForSubmit(images);
-				expect(images).toEqual(original);
-			});
-
-			it("status で絞り込むと order の型が確定する（tsc が検証; test runner では no-op）", () => {
-				const result = ImageUtils.computeImagesForSubmit([]);
-				const item = result[0];
-				if (item) {
-					if (item.status === ImageFormStatus.ToBeDeleted) {
-						expectTypeOf(item.order).toEqualTypeOf<undefined>();
-					} else {
-						expectTypeOf(item.order).toEqualTypeOf<number>();
-					}
-				}
-			});
-		});
-
 		describe("createNew", () => {
 			it("正しいImageNew構造を返すこと", () => {
 				const file = new File(["data"], "photo.jpg", { type: "image/jpeg" });
@@ -220,22 +252,18 @@ if (import.meta.vitest) {
 				expect(result.id).toBeUndefined();
 			});
 
-			it("uploadedUrl を渡すと設定されること", () => {
+			it("uploadRef を渡すと設定されること", () => {
 				const file = new File(["data"], "photo.jpg", { type: "image/jpeg" });
-				const result = ImageUtils.createNew(
-					"temp_abc",
-					file,
-					"https://s3.example.com/photo.jpg",
-				);
+				const result = ImageUtils.createNew("temp_abc", file, "upload-token-1");
 
-				expect(result.uploadedUrl).toBe("https://s3.example.com/photo.jpg");
+				expect(result.uploadRef).toBe("upload-token-1");
 			});
 
-			it("uploadedUrl を省略すると uploadedUrl キーが存在しないこと", () => {
+			it("uploadRef を省略すると uploadRef キーが存在しないこと", () => {
 				const file = new File(["data"], "photo.jpg", { type: "image/jpeg" });
 				const result = ImageUtils.createNew("temp_abc", file);
 
-				expect("uploadedUrl" in result).toBe(false);
+				expect("uploadRef" in result).toBe(false);
 			});
 		});
 
@@ -269,6 +297,47 @@ if (import.meta.vitest) {
 				expect(result.previewUrl).toBe(existing.previewUrl);
 				expect(result.uploadedUrl).toBe(existing.uploadedUrl);
 				expect(result.tempId).toBe(existing.tempId);
+			});
+		});
+
+		describe("markSaved", () => {
+			const makeUploaded = (): ImageUploaded => ({
+				...makeNew({ tempId: "temp_up" }),
+				uploadRef: "upload-token-1",
+			});
+
+			it("ImageUploaded → ImageExisting に昇格すること", () => {
+				const result = ImageUtils.markSaved(makeUploaded(), {
+					id: "id-1",
+					previewUrl: "https://cdn.example.com/up.jpg",
+					uploadedUrl: "https://s3.example.com/up.jpg",
+				});
+
+				expect(result.status).toBe(ImageFormStatus.Existing);
+				expect(result.id).toBe("id-1");
+				expect(result.tempId).toBe("temp_up");
+				expect(result.file).toBeUndefined();
+			});
+
+			it("previewUrl / uploadedUrl は引数の値をそのまま使うこと", () => {
+				const result = ImageUtils.markSaved(makeUploaded(), {
+					id: "id-1",
+					previewUrl: "https://cdn.example.com/up.jpg",
+					uploadedUrl: "https://s3.example.com/up.jpg",
+				});
+
+				expect(result.previewUrl).toBe("https://cdn.example.com/up.jpg");
+				expect(result.uploadedUrl).toBe("https://s3.example.com/up.jpg");
+			});
+
+			it("uploadRef は引き継がないこと（表示に使える保証が無い）", () => {
+				const result = ImageUtils.markSaved(makeUploaded(), {
+					id: "id-1",
+					previewUrl: "https://cdn.example.com/up.jpg",
+					uploadedUrl: "https://s3.example.com/up.jpg",
+				});
+
+				expect("uploadRef" in result).toBe(false);
 			});
 		});
 

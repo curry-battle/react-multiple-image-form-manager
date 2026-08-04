@@ -270,7 +270,7 @@ describe("useMultiImageInputController (characterization)", () => {
 		});
 		const imgs = result.current.controller.raw.watchedImages;
 		expect(imgs.map((i) => i.status)).toEqual(["tobedeleted", "existing"]);
-		expect(result.current.controller.itemsWithErrors).toHaveLength(1);
+		expect(result.current.controller.items).toHaveLength(1);
 	});
 
 	it("handleMove(tempId, 'down'): 対象を可視順で1つ後ろへ", async () => {
@@ -552,7 +552,7 @@ function createZodResolver() {
 }
 
 describe("useMultiImageInputController (real schema errors via zod)", () => {
-	it("invalid file type → per-item file error in itemsWithErrors", async () => {
+	it("invalid file type → per-item file error in items", async () => {
 		const resolver = createZodResolver();
 		const { result } = await renderHook(() => useHarness({ resolver }));
 
@@ -562,7 +562,7 @@ describe("useMultiImageInputController (real schema errors via zod)", () => {
 			);
 		});
 
-		const item = result.current.controller.itemsWithErrors[0];
+		const item = result.current.controller.items[0];
 		expect(item).toBeDefined();
 		expect(item.errors?.file).toBeDefined();
 		expect(item.errors?.file?.message).toEqual(expect.any(String));
@@ -595,7 +595,7 @@ describe("useMultiImageInputController (real schema errors via zod)", () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
 		});
 
-		const item = result.current.controller.itemsWithErrors[0];
+		const item = result.current.controller.items[0];
 		expect(item.errors).toBeUndefined();
 		expect(result.current.controller.rootErrors).toHaveLength(0);
 	});

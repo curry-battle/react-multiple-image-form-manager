@@ -45,7 +45,11 @@ export function createImagesSchema(options: ImageSchemaOptions) {
 		id: z.undefined(),
 		file: fileSchema,
 		previewUrl: z.undefined(),
-		uploadedUrl: z.url().optional(),
+		// uploadFile が返す値は URL とは限らない（登録 API に渡す不透明トークンでも
+		// よい）ため URL 検証はかけない。existing 側は本物の URL なので残す
+		uploadRef: z.string().min(1).optional(),
+		// スキーマから漏らすとパース時に落ちて、差し替えの対応関係が失われる
+		replacesTempId: z.string().min(1).optional(),
 	});
 
 	const existingImageSchema = z.object({

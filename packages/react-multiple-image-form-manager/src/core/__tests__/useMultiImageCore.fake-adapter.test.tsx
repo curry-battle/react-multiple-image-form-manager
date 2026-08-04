@@ -1,14 +1,28 @@
-import { act, useRef, useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import type React from "react";
+import { act, StrictMode, useRef, useState } from "react";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { renderHook } from "vitest-browser-react";
 import type { ImageFieldAdapter } from "../ImageFieldAdapter";
-import type { Image, ImageExisting, ImageNew } from "../types/Image";
+import type {
+	Image,
+	ImageExisting,
+	ImageNew,
+	SubmitImage,
+	UploadedSubmitImage,
+	UploadFileFn,
+	UploadFileResult,
+} from "../types/Image";
+import { ImageUtils } from "../types/Image";
 import type {
 	CoreMessages,
 	ImageFieldError,
 	ImagesError,
 } from "../types/ImageSchemaTypes";
 import { ImageFormStatus } from "../types/ImageStatus";
+import type {
+	UseMultiImageCoreReturn,
+	UseMultiImageCoreUploadedReturn,
+} from "../useMultiImageCore";
 import { useMultiImageCore } from "../useMultiImageCore";
 
 // --- Helpers ---
@@ -26,7 +40,7 @@ const makeNewImage = (overrides?: Partial<ImageNew>): ImageNew => ({
 	status: ImageFormStatus.New,
 	id: undefined,
 	file: new File(["data"], "test.jpg", { type: "image/jpeg" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	...overrides,
 });
 
@@ -45,7 +59,12 @@ const makeExistingImage = (
 /**
  * ref + forceUpdate パターンで「ストアは同期更新・再レンダーは非同期」を模倣する。
  */
-function useFakeAdapter(initial: Image[], errors?: ImagesError) {
+function useFakeAdapter(
+	initial: Image[],
+	errors?: ImagesError,
+	/** read のたびに File を作り直す契約違反の adapter を模倣する */
+	cloneOnRead = false,
+) {
 	const [, force] = useState(0);
 	const imagesRef = useRef<Image[]>(initial);
 	const [errorsState] = useState<ImagesError>(
@@ -61,7 +80,17 @@ function useFakeAdapter(initial: Image[], errors?: ImagesError) {
 
 	const adapter: ImageFieldAdapter = {
 		get images() {
-			return imagesRef.current;
+			if (!cloneOnRead) return imagesRef.current;
+			return imagesRef.current.map((img) =>
+				img.status === ImageFormStatus.New
+					? {
+							...img,
+							file: new File([img.file], img.file.name, {
+								type: img.file.type,
+							}),
+						}
+					: img,
+			);
 		},
 		setImages(next) {
 			imagesRef.current = next;
@@ -83,31 +112,44 @@ async function renderCore(
 		errors?: ImagesError;
 		maxImages?: number;
 		processFile?: (file: File) => Promise<File>;
-		uploadFile?: (file: File) => Promise<{ uploadedUrl: string }>;
+		uploadFile?: UploadFileFn;
 		onError?: (error: unknown) => void;
 		messages?: CoreMessages;
+		wrapper?: React.JSXElementConstructor<{ children: React.ReactNode }>;
+		cloneOnRead?: boolean;
 	} = {},
 ) {
 	const ref: {
 		adapter?: ImageFieldAdapter;
 		validate?: ReturnType<typeof vi.fn>;
 	} = {};
-	const { result } = await renderHook(() => {
-		const { adapter, validate } = useFakeAdapter(initial, options.errors);
-		ref.adapter = adapter;
-		ref.validate = validate;
-		return useMultiImageCore({
-			adapter,
-			processFile: options.processFile,
-			uploadFile: options.uploadFile,
-			onError: options.onError,
-			constraints: options.maxImages
-				? { maxImages: options.maxImages }
-				: undefined,
-			messages: options.messages,
-		});
-	});
-	return { result, ref };
+	let renderCount = 0;
+	const { result, unmount, rerender } = await renderHook(
+		() => {
+			renderCount++;
+			const { adapter, validate } = useFakeAdapter(
+				initial,
+				options.errors,
+				options.cloneOnRead,
+			);
+			ref.adapter = adapter;
+			ref.validate = validate;
+			return useMultiImageCore({
+				adapter,
+				processFile: options.processFile,
+				uploadFile: options.uploadFile,
+				onError: options.onError,
+				constraints: options.maxImages
+					? { maxImages: options.maxImages }
+					: undefined,
+				messages: options.messages,
+			});
+		},
+		options.wrapper ? { wrapper: options.wrapper } : undefined,
+	);
+	// options は参照で閉じ込めてあるので、書き換えてから rerender すれば
+	// パラメータ変更を再現できる
+	return { result, ref, unmount, rerender, getRenderCount: () => renderCount };
 }
 
 // --- Tests ---
@@ -321,7 +363,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 	});
 
-	describe("itemsWithErrors / rootErrors 公開経路", () => {
+	describe("items / rootErrors 公開経路", () => {
 		it("adapter.errors.items[index] を per-item に乗せる", async () => {
 			const a = makeNewImage({ tempId: "a" });
 			const b = makeNewImage({ tempId: "b" });
@@ -330,13 +372,9 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				root: [{ message: "root!" }],
 			};
 			const { result } = await renderCore([a, b], { errors });
-			expect(result.current.itemsWithErrors).toHaveLength(2);
-			expect(result.current.itemsWithErrors[0].errors?.file?.message).toBe(
-				"err-a",
-			);
-			expect(result.current.itemsWithErrors[1].errors?.file?.message).toBe(
-				"err-b",
-			);
+			expect(result.current.items).toHaveLength(2);
+			expect(result.current.items[0].errors?.file?.message).toBe("err-a");
+			expect(result.current.items[1].errors?.file?.message).toBe("err-b");
 			expect(result.current.rootErrors).toEqual<ImageFieldError[]>([
 				{ message: "root!" },
 			]);
@@ -643,7 +681,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			);
 		});
 
-		it("uploadFile が失敗すると false を返し onError(upload_file) を呼ぶ", async () => {
+		it("uploadFile が失敗しても差し替えは成立し onError(upload_file) が届く", async () => {
 			const onError = vi.fn();
 			const uploadFile = vi.fn(async () => {
 				throw new Error("upload boom");
@@ -651,7 +689,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const ex = makeExistingImage({ tempId: "temp_ex" });
 			const { result } = await renderCore([ex], { uploadFile, onError });
 
-			let ok = true;
+			let ok = false;
 			await act(async () => {
 				ok = await result.current.handlers.handleFileChange(
 					"temp_ex",
@@ -659,14 +697,16 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				);
 			});
 
-			expect(ok).toBe(false);
+			// 転送の成否は差し替えの成否と切り離される
+			expect(ok).toBe(true);
 			expect(onError).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "upload_file" }),
 			);
-			expect(result.current.raw.watchedImages).toHaveLength(1);
-			expect(result.current.raw.watchedImages[0].status).toBe(
-				ImageFormStatus.Existing,
-			);
+			const images = result.current.raw.watchedImages;
+			expect(images).toHaveLength(2);
+			expect(images[0].status).toBe(ImageFormStatus.New);
+			expect(images[1].status).toBe(ImageFormStatus.ToBeDeleted);
+			expect(result.current.uploads.failed).toEqual([images[0].tempId]);
 		});
 
 		it("New 画像の差し替えで processFile が失敗しても元画像は変更されない", async () => {
@@ -690,7 +730,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			expect(result.current.raw.watchedImages[0].tempId).toBe("temp_n");
 		});
 
-		it("New 画像の差し替えで uploadFile が失敗しても元画像は変更されない", async () => {
+		it("New 画像の差し替えで uploadFile が失敗しても差し替えたファイルは残る", async () => {
 			const onError = vi.fn();
 			const nv = makeNewImage({ tempId: "temp_n" });
 			const uploadFile = vi.fn(async () => {
@@ -698,7 +738,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			});
 			const { result } = await renderCore([nv], { uploadFile, onError });
 
-			let ok = true;
+			let ok = false;
 			await act(async () => {
 				ok = await result.current.handlers.handleFileChange(
 					"temp_n",
@@ -706,9 +746,13 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				);
 			});
 
-			expect(ok).toBe(false);
+			expect(ok).toBe(true);
 			expect(result.current.raw.watchedImages).toHaveLength(1);
 			expect(result.current.raw.watchedImages[0].tempId).toBe("temp_n");
+			expect((result.current.raw.watchedImages[0] as ImageNew).file.name).toBe(
+				"x.jpg",
+			);
+			expect(result.current.uploads.failed).toEqual(["temp_n"]);
 		});
 	});
 
@@ -743,13 +787,14 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				throw new Error("boom");
 			});
 			const { result } = await renderCore([], { uploadFile });
-			let ok = true;
+			let ok = false;
 			await act(async () => {
 				ok = await result.current.handlers.handleAdd(
 					new File(["d"], "a.jpg", { type: "image/jpeg" }),
 				);
 			});
-			expect(ok).toBe(false);
+			expect(ok).toBe(true);
+			expect(result.current.uploads.failed).toHaveLength(1);
 		});
 
 		it("validate reject で onError 未指定でもクラッシュしない", async () => {
@@ -783,9 +828,9 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 	});
 
 	describe("uploadFile", () => {
-		it("uploadFile が成功すると ImageNew.uploadedUrl が設定されること", async () => {
+		it("uploadFile が成功すると ImageNew.uploadRef が設定されること", async () => {
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/uploaded.jpg",
+				uploadRef: "https://s3.example.com/uploaded.jpg",
 			}));
 			const { result } = await renderCore([], { uploadFile });
 			await act(async () => {
@@ -795,10 +840,10 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			});
 			expect(uploadFile).toHaveBeenCalled();
 			const img = result.current.raw.watchedImages[0] as ImageNew;
-			expect(img.uploadedUrl).toBe("https://s3.example.com/uploaded.jpg");
+			expect(img.uploadRef).toBe("https://s3.example.com/uploaded.jpg");
 		});
 
-		it("uploadFile 未指定時は uploadedUrl が undefined のままであること", async () => {
+		it("uploadFile 未指定時は uploadRef が undefined のままであること", async () => {
 			const { result } = await renderCore([]);
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -806,26 +851,28 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				);
 			});
 			const img = result.current.raw.watchedImages[0] as ImageNew;
-			expect(img.uploadedUrl).toBeUndefined();
+			expect(img.uploadRef).toBeUndefined();
 		});
 
-		it("uploadFile が失敗すると onError が upload_file タイプで呼ばれ false を返すこと", async () => {
+		it("uploadFile が失敗しても項目は残り onError(upload_file) が届くこと", async () => {
 			const onError = vi.fn();
 			const uploadFile = vi.fn(async () => {
 				throw new Error("upload failed");
 			});
 			const { result } = await renderCore([], { uploadFile, onError });
-			let ok = true;
+			let ok = false;
 			await act(async () => {
 				ok = await result.current.handlers.handleAdd(
 					new File(["d"], "a.jpg", { type: "image/jpeg" }),
 				);
 			});
-			expect(ok).toBe(false);
+			// 転送に失敗してもユーザーの選択は捨てない（リトライ導線を残す）
+			expect(ok).toBe(true);
 			expect(onError).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "upload_file" }),
 			);
-			expect(result.current.raw.watchedImages).toHaveLength(0);
+			expect(result.current.raw.watchedImages).toHaveLength(1);
+			expect(result.current.items[0].uploadState?.status).toBe("failed");
 		});
 
 		it("processFile → uploadFile の順で実行されること", async () => {
@@ -836,7 +883,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			});
 			const uploadFile = vi.fn(async () => {
 				callOrder.push("uploadFile");
-				return { uploadedUrl: "https://s3.example.com/uploaded.jpg" };
+				return { uploadRef: "https://s3.example.com/uploaded.jpg" };
 			});
 			const { result } = await renderCore([], { processFile, uploadFile });
 			await act(async () => {
@@ -849,7 +896,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("handleFileChange でも uploadFile が実行されること", async () => {
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/changed.jpg",
+				uploadRef: "https://s3.example.com/changed.jpg",
 			}));
 			const existing = makeExistingImage({ tempId: "temp_ex" });
 			const { result } = await renderCore([existing], { uploadFile });
@@ -863,7 +910,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const newImg = result.current.raw.watchedImages.find(
 				(i) => i.status === ImageFormStatus.New,
 			) as ImageNew;
-			expect(newImg.uploadedUrl).toBe("https://s3.example.com/changed.jpg");
+			expect(newImg.uploadRef).toBe("https://s3.example.com/changed.jpg");
 		});
 
 		it("[messages] uploadFile 失敗時に messages.uploadFile のカスタム文言が onError に載る", async () => {
@@ -888,5 +935,1535 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				}),
 			);
 		});
+	});
+
+	describe("ノンブロッキング転送", () => {
+		const url = (name: string) => `https://s3.example.com/${name}`;
+
+		/** 呼び出し順に deferred を配る uploadFile */
+		function queuedUpload(count: number) {
+			const deferreds = Array.from({ length: count }, () =>
+				createDeferred<UploadFileResult>(),
+			);
+			let call = 0;
+			const uploadFile = vi.fn(
+				async (): Promise<UploadFileResult> => deferreds[call++].promise,
+			);
+			return { uploadFile, deferreds };
+		}
+
+		it("転送の完了を待たずに項目が追加され、pending が公開されること", async () => {
+			const { uploadFile } = queuedUpload(1);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			expect(result.current.raw.watchedImages).toHaveLength(1);
+			expect(result.current.uploads.pending).toHaveLength(1);
+			expect(result.current.items[0].uploadState?.status).toBe("pending");
+		});
+
+		it("転送中にファイルを差し替えると古い転送結果は反映されないこと", async () => {
+			const { uploadFile, deferreds } = queuedUpload(2);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					tempId,
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			// 差し替え前の転送を後から解決させる
+			await act(async () => {
+				deferreds[0].resolve({ uploadRef: url("stale.jpg") });
+				await deferreds[0].promise;
+			});
+			await act(async () => {
+				deferreds[1].resolve({ uploadRef: url("fresh.jpg") });
+				await deferreds[1].promise;
+			});
+
+			const image = result.current.raw.watchedImages[0] as ImageNew;
+			expect(image.file.name).toBe("b.jpg");
+			expect(image.uploadRef).toBe(url("fresh.jpg"));
+		});
+
+		it("転送中に項目を削除すると結果は反映されず onError も呼ばれないこと", async () => {
+			const onError = vi.fn();
+			const { uploadFile, deferreds } = queuedUpload(1);
+			const { result } = await renderCore([], { uploadFile, onError });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			await act(async () => {
+				await result.current.handlers.handleDelete(tempId);
+			});
+			await act(async () => {
+				deferreds[0].resolve({ uploadRef: url("orphan.jpg") });
+				await deferreds[0].promise;
+			});
+
+			expect(result.current.raw.watchedImages).toHaveLength(0);
+			expect(result.current.uploads.failed).toHaveLength(0);
+			expect(onError).not.toHaveBeenCalled();
+		});
+
+		it("複数項目の並行転送がそれぞれ正しい項目へ書き戻されること", async () => {
+			const { uploadFile, deferreds } = queuedUpload(2);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+				await result.current.handlers.handleAdd(
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			// 解決順を逆にしても対応関係は崩れない
+			await act(async () => {
+				deferreds[1].resolve({ uploadRef: url("b.jpg") });
+				deferreds[0].resolve({ uploadRef: url("a.jpg") });
+				await Promise.all([deferreds[0].promise, deferreds[1].promise]);
+			});
+
+			const images = result.current.raw.watchedImages as ImageNew[];
+			expect(images[0].file.name).toBe("a.jpg");
+			expect(images[0].uploadRef).toBe(url("a.jpg"));
+			expect(images[1].file.name).toBe("b.jpg");
+			expect(images[1].uploadRef).toBe(url("b.jpg"));
+		});
+
+		it("processFile 設定時も書き戻しが成立すること", async () => {
+			// startUpload へ加工前の File を渡すと同一性比較が常に不成立になり、
+			// この検証だけが取り違えを検出できる
+			const processFile = vi.fn(
+				async (file: File) =>
+					new File([file], `processed_${file.name}`, { type: file.type }),
+			);
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: url("processed.jpg"),
+			}));
+			const { result } = await renderCore([], { processFile, uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			const image = result.current.raw.watchedImages[0] as ImageNew;
+			expect(image.file.name).toBe("processed_a.jpg");
+			expect(image.uploadRef).toBe(url("processed.jpg"));
+		});
+	});
+
+	describe("uploads API", () => {
+		const url = (name: string) => `https://s3.example.com/${name}`;
+
+		it("uploads.wait: uploadFile 未設定なら常に ok を返すこと", async () => {
+			const { result } = await renderCore([]);
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			let waitResult: Awaited<
+				ReturnType<typeof result.current.uploads.wait>
+			> | null = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(waitResult).toMatchObject({ ok: true });
+			expect(
+				waitResult && (waitResult as { images: unknown[] }).images,
+			).toHaveLength(1);
+		});
+
+		it("uploads.wait: 転送完了まで待ち、uploadRef 込みの images を返すこと", async () => {
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				deferred.resolve({ uploadRef: url("a.jpg") });
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("a.jpg") }],
+			});
+		});
+
+		it("uploads.wait: 待機中に開始された転送も待つこと（収束ループ）", async () => {
+			const deferreds = [
+				createDeferred<UploadFileResult>(),
+				createDeferred<UploadFileResult>(),
+			];
+			let call = 0;
+			const uploadFile = vi.fn(async () => deferreds[call++].promise);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				// uploads.wait が 1 本目を待っている間に 2 本目を開始する
+				await result.current.handlers.handleAdd(
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+				deferreds[0].resolve({ uploadRef: url("a.jpg") });
+				deferreds[1].resolve({ uploadRef: url("b.jpg") });
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("a.jpg") }, { uploadRef: url("b.jpg") }],
+			});
+		});
+
+		it("uploads.wait: 失敗した項目があると ok:false と failedTempIds を返すこと", async () => {
+			const uploadFile = vi.fn(async () => {
+				throw new Error("boom");
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(waitResult).toEqual({ ok: false, failedTempIds: [tempId] });
+		});
+
+		it("uploads.wait: 台帳に無い未転送の new 項目は再発行してから判定すること", async () => {
+			// uploadRef を持たない new 項目を初期値として与える（remount 後と同じ状態）
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: url("healed.jpg"),
+			}));
+			const orphan = makeNewImage({ tempId: "temp_orphan" });
+			const { result } = await renderCore([orphan], { uploadFile });
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(uploadFile).toHaveBeenCalled();
+			expect(waitResult).toMatchObject({ ok: true });
+		});
+
+		it("uploads.wait: 台帳が別の File のものなら未着手として再発行すること", async () => {
+			// adapter は公開ポートなので、consumer が handlers を介さず
+			// setImages でファイルを差し替えることがありうる
+			const uploadFile = vi.fn(async (file: File) => ({
+				uploadRef: url(file.name),
+			}));
+			const { result, ref } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const added = result.current.raw.watchedImages[0] as ImageNew;
+			expect(added.uploadRef).toBe(url("a.jpg"));
+
+			await act(async () => {
+				ref.adapter?.setImages([
+					{
+						...added,
+						file: new File(["b"], "b.jpg", { type: "image/jpeg" }),
+						uploadRef: undefined,
+					},
+				]);
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("b.jpg") }],
+			});
+		});
+
+		it("uploads.getReady(): 走行中の項目を待たずに除外すること", async () => {
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const existing = makeExistingImage();
+			const { result } = await renderCore([existing], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[1].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			// 除外しても existing は残る。除外したものは tempId で伝える
+			expect(waitResult).toEqual({
+				images: [{ id: existing.id }],
+				deletedIds: [],
+				excludedTempIds: [tempId],
+			});
+			// 項目自体はフォームに残り、転送も走り続ける
+			expect(result.current.raw.watchedImages).toHaveLength(2);
+			expect(result.current.uploads.pending).toEqual([tempId]);
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("a.jpg") });
+				await deferred.promise;
+			});
+
+			// 解決後は除外されない
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+			expect(waitResult).toEqual({
+				images: [{ id: existing.id }, { uploadRef: url("a.jpg") }],
+				deletedIds: [],
+				excludedTempIds: [],
+			});
+		});
+
+		it("uploads.getReady(): 失敗した項目も除外すること", async () => {
+			const uploadFile = vi.fn(async () => {
+				throw new Error("boom");
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			// 失敗しようがないので ok の判定を持たない
+			expect(waitResult).toEqual({
+				images: [],
+				deletedIds: [],
+				excludedTempIds: [tempId],
+			});
+			expect(result.current.uploads.failed).toEqual([tempId]);
+		});
+
+		it("uploads.getReady(): 差し替え中は元画像がその位置に残ること", async () => {
+			// 対の ToBeDeleted をそのまま deletedIds に載せると元画像が消える。
+			// replacesTempId をたどって元画像を戻すことを確かめる
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const existing = makeExistingImage({ tempId: "temp_ex" });
+			const { result } = await renderCore([existing], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					"temp_ex",
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const replacementTempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			// 差し替え後の new は除外されるが、元画像は削除されず同じ位置に戻る。
+			// 削除だけを送ると「元が消えて差し替え後も入らない」状態になる
+			expect(waitResult).toEqual({
+				images: [{ id: existing.id }],
+				deletedIds: [],
+				excludedTempIds: [replacementTempId],
+			});
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("b.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("uploads.getReady(): 差し替えが解決していれば元画像は削除されること", async () => {
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const existing = makeExistingImage({ tempId: "temp_ex" });
+			const { result } = await renderCore([existing], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					"temp_ex",
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("b.jpg") });
+				await deferred.promise;
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			expect(waitResult).toEqual({
+				images: [{ uploadRef: url("b.jpg") }],
+				deletedIds: [existing.id],
+				excludedTempIds: [],
+			});
+		});
+
+		it("uploads.getReady(): 差し替え後にさらに選び直しても元画像との対応が残ること", async () => {
+			const deferreds = [
+				createDeferred<UploadFileResult>(),
+				createDeferred<UploadFileResult>(),
+			];
+			let call = 0;
+			const uploadFile = vi.fn(async () => deferreds[call++].promise);
+			const existing = makeExistingImage({ tempId: "temp_ex" });
+			const { result } = await renderCore([existing], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					"temp_ex",
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const newTempId = result.current.raw.watchedImages[0].tempId;
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					newTempId,
+					new File(["c"], "c.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			expect(waitResult).toMatchObject({
+				images: [{ id: existing.id }],
+				deletedIds: [],
+			});
+		});
+
+		it("uploads.getReady(): 差し替えが複数あっても解決済みと未解決を取り違えないこと", async () => {
+			const deferreds = [
+				createDeferred<UploadFileResult>(),
+				createDeferred<UploadFileResult>(),
+			];
+			let call = 0;
+			const uploadFile = vi.fn(async () => deferreds[call++].promise);
+			const first = makeExistingImage({ tempId: "temp_ex1", id: "id-1" });
+			const second = makeExistingImage({ tempId: "temp_ex2", id: "id-2" });
+			const { result } = await renderCore([first, second], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					"temp_ex1",
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					"temp_ex2",
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const pendingTempId = result.current.raw.watchedImages[1].tempId;
+
+			// 1 本目だけ解決させる
+			await act(async () => {
+				deferreds[0].resolve({ uploadRef: url("a.jpg") });
+				await deferreds[0].promise;
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			// 解決済みは差し替え後が入り元は削除、未解決は元が残る
+			expect(waitResult).toEqual({
+				images: [{ uploadRef: url("a.jpg") }, { id: "id-2" }],
+				deletedIds: ["id-1"],
+				excludedTempIds: [pendingTempId],
+			});
+
+			await act(async () => {
+				deferreds[1].resolve({ uploadRef: url("b.jpg") });
+				await deferreds[1].promise;
+			});
+		});
+
+		it("uploads.getReady(): 差し替え後を削除したら元画像は削除されること", async () => {
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const existing = makeExistingImage({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([existing], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					"temp_ex",
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const replacementTempId = result.current.raw.watchedImages[0].tempId;
+			await act(async () => {
+				await result.current.handlers.handleDelete(replacementTempId);
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			// 差し替えをやめて削除しただけなので、元画像は消える
+			expect(waitResult).toEqual({
+				images: [],
+				deletedIds: ["id-ex"],
+				excludedTempIds: [],
+			});
+		});
+
+		it("uploads.getReady(): replacesTempId の指す項目が無くても元画像を捏造しないこと", async () => {
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const orphanLink: ImageNew = {
+				...makeNewImage({ tempId: "temp_new" }),
+				replacesTempId: "temp_missing",
+			};
+			const { result } = await renderCore([orphanLink], { uploadFile });
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			expect(waitResult).toEqual({
+				images: [],
+				deletedIds: [],
+				excludedTempIds: ["temp_new"],
+			});
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("b.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("uploads.getReady(): 転送に失敗した差し替えでも元画像が戻ること", async () => {
+			// failed も listUnresolved に含まれるので除外対象になる。ここで元画像を
+			// 戻さないと、失敗したときだけ「元が消えて差し替え後も入らない」が残る
+			const uploadFile = vi.fn(async () => {
+				throw new Error("boom");
+			});
+			const existing = makeExistingImage({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([existing], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					"temp_ex",
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const replacementTempId = result.current.raw.watchedImages[0].tempId;
+			expect(result.current.uploads.failed).toEqual([replacementTempId]);
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			expect(waitResult).toEqual({
+				images: [{ id: "id-ex" }],
+				deletedIds: [],
+				excludedTempIds: [replacementTempId],
+			});
+		});
+
+		it("uploads.getReady(): remount 後も差し替えの対応が効くこと", async () => {
+			// 対応をフック内に持つと remount で失われ、削除だけが送られる状態に戻る
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const deleted = ImageUtils.markDelete(
+				makeExistingImage({ tempId: "temp_ex", id: "id-ex" }),
+			);
+			const replacement: ImageNew = {
+				...makeNewImage({ tempId: "temp_new" }),
+				replacesTempId: "temp_ex",
+			};
+			const { result } = await renderCore([replacement, deleted], {
+				uploadFile,
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			expect(waitResult).toMatchObject({
+				images: [{ id: "id-ex" }],
+				deletedIds: [],
+			});
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("b.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("uploads.getReady(): uploadFile 未設定なら何も除外しないこと", async () => {
+			const { result } = await renderCore([]);
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = result.current.uploads.getReady();
+			});
+
+			// 転送しない構成では uploadRef が無いのが正常。除外すると全部消える。
+			// 新規項目は転送を消費側に委ねるので File のまま渡し、失敗した項目を
+			// 指し示せるよう tempId を添える
+			expect(waitResult).toMatchObject({ excludedTempIds: [] });
+			const images = (waitResult as { images: SubmitImage[] }).images;
+			expect(images).toHaveLength(1);
+			expect(images[0]).toEqual({
+				file: expect.any(File),
+				tempId: result.current.raw.watchedImages[0].tempId,
+			});
+		});
+
+		it("retry: pending 中は受け付けず false を返すこと", async () => {
+			const deferred = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => deferred.promise);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let retried = true;
+			await act(async () => {
+				retried = await result.current.uploads.retry(tempId);
+			});
+
+			expect(retried).toBe(false);
+			expect(uploadFile).toHaveBeenCalledOnce();
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("a.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("retry: 失敗した項目を再転送して回復できること", async () => {
+			let shouldFail = true;
+			const uploadFile = vi.fn(async () => {
+				if (shouldFail) throw new Error("boom");
+				return { uploadRef: url("recovered.jpg") };
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+			expect(result.current.uploads.failed).toEqual([tempId]);
+
+			shouldFail = false;
+			let retried = false;
+			await act(async () => {
+				retried = await result.current.uploads.retry(tempId);
+			});
+
+			expect(retried).toBe(true);
+			expect(result.current.uploads.failed).toHaveLength(0);
+			expect((result.current.raw.watchedImages[0] as ImageNew).uploadRef).toBe(
+				url("recovered.jpg"),
+			);
+		});
+
+		it("wait() の待機中に retry で始まった転送も待つこと", async () => {
+			// retry は started.settled を await する独自経路を持つ。走行中の別の転送が
+			// 待機を維持している間に retry が始まると、収束ループがそれを拾えるか
+			const slow = createDeferred<UploadFileResult>();
+			const recovered = createDeferred<UploadFileResult>();
+			let failNext = false;
+			const uploadFile = vi.fn(async () => {
+				if (failNext) throw new Error("boom");
+				return slow.promise;
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			// 1 本目: 待機を維持する役
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			// 2 本目: 失敗させる
+			failNext = true;
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const failedTempId = result.current.raw.watchedImages[1].tempId;
+			expect(result.current.uploads.failed).toEqual([failedTempId]);
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+
+				// 待機中に retry を始める
+				failNext = false;
+				uploadFile.mockImplementationOnce(async () => recovered.promise);
+				const retried = result.current.uploads.retry(failedTempId);
+
+				slow.resolve({ uploadRef: url("slow.jpg") });
+				recovered.resolve({ uploadRef: url("recovered.jpg") });
+				await retried;
+				await waiting;
+			});
+
+			// retry で始まった転送も待ってから ok を返す
+			expect(waitResult).toEqual({
+				ok: true,
+				images: [
+					{ uploadRef: url("slow.jpg") },
+					{ uploadRef: url("recovered.jpg") },
+				],
+				deletedIds: [],
+			});
+		});
+
+		it("retry: 再試行しても失敗したら false を返すこと", async () => {
+			const uploadFile = vi.fn(async () => {
+				throw new Error("boom");
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let retried = true;
+			await act(async () => {
+				retried = await result.current.uploads.retry(tempId);
+			});
+
+			expect(retried).toBe(false);
+			expect(result.current.uploads.failed).toEqual([tempId]);
+		});
+
+		it("retry: 不明な tempId では false を返すこと", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: url("a.jpg") }));
+			const { result } = await renderCore([], { uploadFile });
+
+			let retried = true;
+			await act(async () => {
+				retried = await result.current.uploads.retry("temp_unknown");
+			});
+
+			expect(retried).toBe(false);
+			expect(uploadFile).not.toHaveBeenCalled();
+		});
+
+		it("失敗した項目のファイル差し替えで failed が pending に置き換わること", async () => {
+			const deferred = createDeferred<UploadFileResult>();
+			let shouldFail = true;
+			const uploadFile = vi.fn(async () => {
+				if (shouldFail) throw new Error("boom");
+				return deferred.promise;
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+			expect(result.current.uploads.failed).toEqual([tempId]);
+
+			shouldFail = false;
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					tempId,
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			expect(result.current.uploads.failed).toHaveLength(0);
+			expect(result.current.uploads.pending).toHaveLength(1);
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("b.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("失敗した項目を削除すると failed から除去されること", async () => {
+			const uploadFile = vi.fn(async () => {
+				throw new Error("boom");
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+			expect(result.current.uploads.failed).toEqual([tempId]);
+
+			await act(async () => {
+				await result.current.handlers.handleDelete(tempId);
+			});
+
+			expect(result.current.uploads.failed).toHaveLength(0);
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+			expect(waitResult).toMatchObject({ ok: true });
+		});
+	});
+
+	describe("転送の中断 (AbortSignal)", () => {
+		/** uploadFile が受け取った signal を順に記録する */
+		function signalCapturingUpload(count: number) {
+			const signals: (AbortSignal | undefined)[] = [];
+			const deferreds = Array.from({ length: count }, () =>
+				createDeferred<UploadFileResult>(),
+			);
+			let call = 0;
+			const uploadFile: UploadFileFn = async (_file, ctx) => {
+				signals.push(ctx?.signal);
+				return deferreds[call++].promise;
+			};
+			return { uploadFile: vi.fn(uploadFile), signals, deferreds };
+		}
+
+		it("ファイル差し替えで旧転送が中断され、新転送は生きていること", async () => {
+			const { uploadFile, signals } = signalCapturingUpload(2);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			await act(async () => {
+				await result.current.handlers.handleFileChange(
+					tempId,
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			expect(signals[0]?.aborted).toBe(true);
+			expect(signals[1]?.aborted).toBe(false);
+		});
+
+		it("項目の削除で転送が中断されること", async () => {
+			const { uploadFile, signals } = signalCapturingUpload(1);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			await act(async () => {
+				await result.current.handlers.handleDelete(tempId);
+			});
+
+			expect(signals[0]?.aborted).toBe(true);
+		});
+
+		it("unmount で中断され、その後 resolve しても書き戻されないこと", async () => {
+			// unmount 後の書き戻しを許すと、フォームを共有する remount 後の
+			// インスタンスへ古い URL が紛れ込む
+			const { uploadFile, signals, deferreds } = signalCapturingUpload(1);
+			const { result, ref, unmount } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			await unmount();
+			expect(signals[0]?.aborted).toBe(true);
+
+			await act(async () => {
+				deferreds[0].resolve({
+					uploadRef: "https://s3.example.com/late.jpg",
+				});
+				await deferreds[0].promise;
+			});
+
+			const images = ref.adapter?.images ?? [];
+			expect((images[0] as ImageNew).uploadRef).toBeUndefined();
+		});
+	});
+
+	describe("uploadRef を伴わない resolve", () => {
+		it("失敗として扱い、転送を撃ち続けないこと", async () => {
+			// 成功扱いすると done なのに未解決の項目が残り、reissueUnresolved が
+			// 毎周 startUpload を呼んで uploads.wait が返らなくなる
+			const uploadFile = vi.fn(async () => ({}) as unknown as UploadFileResult);
+			const onError = vi.fn();
+			const { result } = await renderCore([], { uploadFile, onError });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			const tempId = result.current.raw.watchedImages[0].tempId;
+			expect(result.current.uploads.failed).toEqual([tempId]);
+			expect(onError).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upload_file" }),
+			);
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(waitResult).toEqual({ ok: false, failedTempIds: [tempId] });
+			expect(uploadFile).toHaveBeenCalledOnce();
+		});
+
+		it("空文字の uploadRef も失敗として扱うこと", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: "" }));
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			expect(result.current.uploads.failed).toHaveLength(1);
+		});
+	});
+
+	describe("進捗（ctx.onProgress）", () => {
+		const url = (name: string) => `https://s3.example.com/${name}`;
+
+		/** onProgress を掴んで任意のタイミングで叩けるようにする */
+		function progressCapturingUpload() {
+			const deferred = createDeferred<UploadFileResult>();
+			const captured: { onProgress?: (fraction: number) => void } = {};
+			const uploadFile: UploadFileFn = vi.fn((_file, ctx) => {
+				captured.onProgress = ctx.onProgress;
+				return deferred.promise;
+			});
+			return { uploadFile, captured, deferred };
+		}
+
+		it("報告した値が uploadState に出ること", async () => {
+			const { uploadFile, captured, deferred } = progressCapturingUpload();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			await act(async () => {
+				captured.onProgress?.(0.375);
+			});
+
+			expect(result.current.items[0].uploadState).toEqual({
+				status: "pending",
+				progress: 0.375,
+			});
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("a.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("整数パーセントが変わらない報告では再レンダーしないこと", async () => {
+			// チャンクごとに台帳へ書くと転送 1 本で数百回の再レンダーになる
+			const { uploadFile, captured, deferred } = progressCapturingUpload();
+			const { result, getRenderCount } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			await act(async () => {
+				captured.onProgress?.(0.5);
+			});
+			const afterFirst = getRenderCount();
+
+			await act(async () => {
+				// 0.50x は同じ 50%。表示は変わらないので書き込まない
+				captured.onProgress?.(0.501);
+				captured.onProgress?.(0.5099);
+			});
+			expect(getRenderCount()).toBe(afterFirst);
+
+			await act(async () => {
+				captured.onProgress?.(0.51);
+			});
+			expect(getRenderCount()).toBeGreaterThan(afterFirst);
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("a.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("非有限の報告は弾き、範囲外はクランプすること", async () => {
+			const { uploadFile, captured, deferred } = progressCapturingUpload();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			await act(async () => {
+				captured.onProgress?.(Number.NaN);
+			});
+			expect(result.current.items[0].uploadState).toEqual({
+				status: "pending",
+				progress: undefined,
+			});
+
+			await act(async () => {
+				captured.onProgress?.(3);
+			});
+			expect(result.current.items[0].uploadState).toEqual({
+				status: "pending",
+				progress: 1,
+			});
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("a.jpg") });
+				await deferred.promise;
+			});
+		});
+
+		it("転送が終わると進捗も消えること", async () => {
+			const { uploadFile, captured, deferred } = progressCapturingUpload();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			await act(async () => {
+				captured.onProgress?.(0.5);
+			});
+
+			await act(async () => {
+				deferred.resolve({ uploadRef: url("a.jpg") });
+				await deferred.promise;
+			});
+
+			expect(result.current.items[0].uploadState).toBeUndefined();
+		});
+	});
+
+	describe("台帳による反映遅延の吸収", () => {
+		const url = (name: string) => `https://s3.example.com/${name}`;
+
+		it("フォーム state から uploadRef が欠けても台帳が補うこと", async () => {
+			// ImageFieldAdapter は setImages の同期反映を契約していないため、
+			// 書き戻し直後のフォーム state に uploadRef が乗っていない実装がありうる
+			const uploadFile = vi.fn(async () => ({ uploadRef: url("late.jpg") }));
+			const { result, ref } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const stored = result.current.raw.watchedImages[0] as ImageNew;
+			expect(stored.uploadRef).toBe(url("late.jpg"));
+
+			// 同じ File のまま uploadRef だけが反映されていない状態を作る
+			await act(async () => {
+				ref.adapter?.setImages([{ ...stored, uploadRef: undefined }]);
+			});
+
+			// 表示側は台帳で補われる
+			expect((result.current.items[0].image as ImageNew).uploadRef).toBe(
+				url("late.jpg"),
+			);
+
+			// 判定と素材も同じ供給源を通るので食い違わない
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("late.jpg") }],
+			});
+			expect(uploadFile).toHaveBeenCalledOnce();
+		});
+	});
+
+	describe("契約違反の adapter に対する tripwire", () => {
+		const url = (name: string) => `https://s3.example.com/${name}`;
+
+		it("File の参照を保持しない adapter でも転送が無限に走らないこと", async () => {
+			// read のたびに File を作り直すと書き戻しが常に破棄され、
+			// 再発行が永久に回る（ImageFieldAdapter の不変条件違反）
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: "https://s3.example.com/never-lands.jpg",
+			}));
+			// 並べ替えで実際に setImages を起こすため 2 件で始める。単一項目への
+			// handleMove は moved: false で setImages に到達せず、再レンダーが起きない
+			const { result } = await renderCore(
+				[
+					makeNewImage({ tempId: "temp_clone" }),
+					makeExistingImage({ tempId: "temp_keep" }),
+				],
+				{ uploadFile, cloneOnRead: true },
+			);
+
+			await vi.waitFor(() =>
+				expect(result.current.uploads.failed).toEqual(["temp_clone"]),
+			);
+			// 上限で打ち切られ、撃ち続けない
+			expect(uploadFile).toHaveBeenCalledTimes(2);
+
+			// 打ち切り後、再レンダーが起きても再発行されないこと
+			const callsAtTripwire = uploadFile.mock.calls.length;
+			const orderBefore = result.current.raw.watchedImages.map((i) => i.tempId);
+			await act(async () => {
+				await result.current.handlers.handleMove("temp_keep", "up");
+			});
+			expect(result.current.raw.watchedImages.map((i) => i.tempId)).not.toEqual(
+				orderBefore,
+			);
+			expect(uploadFile).toHaveBeenCalledTimes(callsAtTripwire);
+		});
+
+		it("待機中のファイル差し替えを失敗と誤検知しないこと", async () => {
+			// 進捗なし検出を 1 周で打ち切ると、差し替え直後の周回（旧転送は中断され、
+			// 新転送はまだ結果を出していない）を失敗と判定してしまう
+			const deferreds = [
+				createDeferred<UploadFileResult>(),
+				createDeferred<UploadFileResult>(),
+			];
+			let call = 0;
+			const uploadFile = vi.fn(async () => deferreds[call++].promise);
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				// 保存を押した直後に写真を選び直す
+				await result.current.handlers.handleFileChange(
+					tempId,
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+				// 中断された旧転送だけを先に settle させ、uploads.wait に
+				// 「進捗の無い周回」を 1 回経験させる
+				deferreds[0].resolve({ uploadRef: url("stale.jpg") });
+				await new Promise((resolve) => setTimeout(resolve, 0));
+
+				deferreds[1].resolve({ uploadRef: url("fresh.jpg") });
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("fresh.jpg") }],
+			});
+		});
+
+		it("uploads.wait がハングせず失敗を返すこと", async () => {
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: "https://s3.example.com/never-lands.jpg",
+			}));
+			const { result } = await renderCore(
+				[makeNewImage({ tempId: "temp_clone" })],
+				{ uploadFile, cloneOnRead: true },
+			);
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(waitResult).toEqual({
+				ok: false,
+				failedTempIds: ["temp_clone"],
+			});
+			// 台帳にも残す。これが無いと消費側が該当項目を提示も retry もできない
+			expect(result.current.uploads.failed).toEqual(["temp_clone"]);
+			expect(result.current.items[0].uploadState).toMatchObject({
+				status: "failed",
+			});
+		});
+	});
+
+	describe("StrictMode", () => {
+		it("settle しない転送を中断しても再 mount 側で再発行されること", async () => {
+			// signal を無視して返らない実装。中断した転送が台帳の枠を占有し続けると、
+			// 開発時 StrictMode で転送が二度と始まらない
+			const uploadFile = vi.fn(() => new Promise<UploadFileResult>(() => {}));
+
+			await renderCore([makeNewImage({ tempId: "temp_hang" })], {
+				uploadFile,
+				wrapper: StrictMode,
+			});
+
+			await vi.waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(2));
+		});
+
+		it("effect の二重実行でも生き残る転送は 1 本で、完了まで到達すること", async () => {
+			// cleanup で中断された転送は settle 時に台帳から落ち、再発行される。
+			// 中断済みの 1 本が uploadFile に届くのは避けられないが、
+			// 並走せず、書き戻しに至るのは 1 本だけであることを保証する
+			const signals: (AbortSignal | undefined)[] = [];
+			const uploadFile = vi.fn(
+				async (_file: File, ctx?: { signal: AbortSignal }) => {
+					signals.push(ctx?.signal);
+					return { uploadRef: "https://s3.example.com/strict.jpg" };
+				},
+			);
+			const orphan = makeNewImage({ tempId: "temp_strict" });
+
+			const { result } = await renderCore([orphan], {
+				uploadFile,
+				wrapper: StrictMode,
+			});
+
+			await vi.waitFor(() =>
+				expect(
+					(result.current.raw.watchedImages[0] as ImageNew).uploadRef,
+				).toBe("https://s3.example.com/strict.jpg"),
+			);
+			expect(signals.filter((s) => s?.aborted === false)).toHaveLength(1);
+			expect(result.current.uploads.pending).toHaveLength(0);
+			expect(result.current.uploads.failed).toHaveLength(0);
+		});
+	});
+
+	describe("同期 throw する uploadFile", () => {
+		it("failed に遷移し、項目は残ること", async () => {
+			// async 関数ではないため catch へ同期到達する
+			const uploadFile = vi.fn((): Promise<UploadFileResult> => {
+				throw new Error("sync boom");
+			});
+			const onError = vi.fn();
+			const { result } = await renderCore([], { uploadFile, onError });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+
+			const tempId = result.current.raw.watchedImages[0].tempId;
+			expect(result.current.uploads.failed).toEqual([tempId]);
+			expect(onError).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upload_file" }),
+			);
+		});
+
+		it("retry で回復できること", async () => {
+			let shouldThrow = true;
+			const uploadFile = vi.fn((): Promise<UploadFileResult> => {
+				if (shouldThrow) throw new Error("sync boom");
+				return Promise.resolve({
+					uploadRef: "https://s3.example.com/recovered.jpg",
+				});
+			});
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.handleAdd(
+					new File(["a"], "a.jpg", { type: "image/jpeg" }),
+				);
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			shouldThrow = false;
+			let retried = false;
+			await act(async () => {
+				retried = await result.current.uploads.retry(tempId);
+			});
+
+			expect(retried).toBe(true);
+			expect((result.current.raw.watchedImages[0] as ImageNew).uploadRef).toBe(
+				"https://s3.example.com/recovered.jpg",
+			);
+		});
+	});
+
+	describe("未転送項目の self-heal", () => {
+		it("mount 後に現れた uploadRef の無い new 項目も転送されること", async () => {
+			// 初期値が非同期に投入される（reset / 下書き復元など）と、mount 時点では
+			// 対象が存在しない
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: "https://s3.example.com/late.jpg",
+			}));
+			const { result, ref } = await renderCore([], { uploadFile });
+			expect(uploadFile).not.toHaveBeenCalled();
+
+			await act(async () => {
+				ref.adapter?.setImages([makeNewImage({ tempId: "temp_late" })]);
+			});
+
+			await vi.waitFor(() => expect(uploadFile).toHaveBeenCalledOnce());
+			await vi.waitFor(() =>
+				expect(
+					(result.current.raw.watchedImages[0] as ImageNew).uploadRef,
+				).toBe("https://s3.example.com/late.jpg"),
+			);
+		});
+
+		it("失敗済みの項目は再レンダーのたびに自動再試行されないこと", async () => {
+			const uploadFile = vi.fn(async () => {
+				throw new Error("boom");
+			});
+			// 並べ替えで実際に setImages を起こすため 2 件で始める。単一項目への
+			// handleMove は moved: false で setImages に到達せず、再レンダーが起きない
+			const { result } = await renderCore(
+				[
+					makeNewImage({ tempId: "temp_f" }),
+					makeExistingImage({ tempId: "temp_keep" }),
+				],
+				{ uploadFile },
+			);
+
+			await vi.waitFor(() =>
+				expect(result.current.uploads.failed).toEqual(["temp_f"]),
+			);
+
+			// 無関係な操作で再レンダーさせても再試行しない（retry の責務）
+			const orderBefore = result.current.raw.watchedImages.map((i) => i.tempId);
+			await act(async () => {
+				await result.current.handlers.handleMove("temp_keep", "up");
+			});
+			expect(result.current.raw.watchedImages.map((i) => i.tempId)).not.toEqual(
+				orderBefore,
+			);
+
+			expect(uploadFile).toHaveBeenCalledOnce();
+		});
+
+		it("uploadRef の無い new 項目の転送が mount 時に再発行されること", async () => {
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: "https://s3.example.com/healed.jpg",
+			}));
+			const orphan = makeNewImage({ tempId: "temp_orphan" });
+
+			const { result } = await renderCore([orphan], { uploadFile });
+
+			await vi.waitFor(() => expect(uploadFile).toHaveBeenCalledOnce());
+			await vi.waitFor(() =>
+				expect(
+					(result.current.raw.watchedImages[0] as ImageNew).uploadRef,
+				).toBe("https://s3.example.com/healed.jpg"),
+			);
+		});
+
+		it("uploadFile が後から渡されたら未転送の項目を拾うこと", async () => {
+			// undefined の間に追加された項目は startUpload が即 return する。
+			// reconciliation の依存に uploadFile の有無を含める根拠
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: "https://s3.example.com/late-uploadfile.jpg",
+			}));
+			const orphan = makeNewImage({ tempId: "temp_late" });
+			const options: { uploadFile?: UploadFileFn } = {};
+			const { result, rerender } = await renderCore([orphan], options);
+
+			expect(uploadFile).not.toHaveBeenCalled();
+
+			options.uploadFile = uploadFile;
+			await act(async () => {
+				await rerender();
+			});
+
+			await vi.waitFor(() => expect(uploadFile).toHaveBeenCalledOnce());
+			await vi.waitFor(() =>
+				expect(
+					(result.current.raw.watchedImages[0] as ImageNew).uploadRef,
+				).toBe("https://s3.example.com/late-uploadfile.jpg"),
+			);
+		});
+
+		it("uploadRef を持つ new 項目は再発行されないこと", async () => {
+			const uploadFile = vi.fn(async () => ({
+				uploadRef: "https://s3.example.com/never.jpg",
+			}));
+			const done = makeNewImage({
+				tempId: "temp_done",
+				uploadRef: "https://s3.example.com/already.jpg",
+			});
+
+			await renderCore([done], { uploadFile });
+
+			expect(uploadFile).not.toHaveBeenCalled();
+		});
+	});
+});
+
+// --- 型レベルの検証（tsc が担保。test runner では no-op） ---
+
+describe("戻り型の分岐（tsc が検証）", () => {
+	const withUpload = (adapter: ImageFieldAdapter, uploadFile: UploadFileFn) =>
+		useMultiImageCore({ adapter, uploadFile });
+	const withoutUpload = (adapter: ImageFieldAdapter) =>
+		useMultiImageCore({ adapter });
+	const maybeUpload = (
+		adapter: ImageFieldAdapter,
+		uploadFile: UploadFileFn | undefined,
+	) => useMultiImageCore({ adapter, uploadFile });
+	const explicitUndefined = (adapter: ImageFieldAdapter) =>
+		useMultiImageCore({ adapter, uploadFile: undefined });
+
+	it("uploadFile 設定時は uploadRef が確定した型を返すこと", () => {
+		expectTypeOf<
+			ReturnType<typeof withUpload>
+		>().toEqualTypeOf<UseMultiImageCoreUploadedReturn>();
+	});
+
+	it("uploadFile 未設定時は緩い型を返すこと", () => {
+		expectTypeOf<
+			ReturnType<typeof withoutUpload>
+		>().toEqualTypeOf<UseMultiImageCoreReturn>();
+	});
+
+	it("uploadFile が undefined を含みうる場合は緩い型を返すこと", () => {
+		expectTypeOf<
+			ReturnType<typeof maybeUpload>
+		>().toEqualTypeOf<UseMultiImageCoreReturn>();
+		expectTypeOf<
+			ReturnType<typeof explicitUndefined>
+		>().toEqualTypeOf<UseMultiImageCoreReturn>();
+	});
+
+	// wait が返すのは送信素材そのもの。uploadFile を設定した経路では
+	// 新規項目が uploadRef を持つ形に確定し、確定しない経路では File を渡す形も混ざる
+	type SettleOk<
+		T extends UseMultiImageCoreReturn | UseMultiImageCoreUploadedReturn,
+	> = Extract<Awaited<ReturnType<T["uploads"]["wait"]>>, { ok: true }>;
+
+	it("uploadFile 設定時は id か uploadRef の 2 択になること", () => {
+		expectTypeOf<
+			SettleOk<UseMultiImageCoreUploadedReturn>["images"][number]
+		>().toEqualTypeOf<UploadedSubmitImage>();
+	});
+
+	it("uploadFile が確定しない経路では File を渡す形も含むこと", () => {
+		expectTypeOf<
+			SettleOk<UseMultiImageCoreReturn>["images"][number]
+		>().toEqualTypeOf<SubmitImage>();
+	});
+
+	it("削除対象は配列から外れ deletedIds に出ること", () => {
+		expectTypeOf<
+			SettleOk<UseMultiImageCoreUploadedReturn>["deletedIds"]
+		>().toEqualTypeOf<string[]>();
 	});
 });

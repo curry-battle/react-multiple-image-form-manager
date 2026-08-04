@@ -10,6 +10,8 @@ const IMAGE_FIELD_KEYS = [
 	"id",
 	"previewUrl",
 	"uploadedUrl",
+	"uploadRef",
+	"replacesTempId",
 	"status",
 ] as const;
 

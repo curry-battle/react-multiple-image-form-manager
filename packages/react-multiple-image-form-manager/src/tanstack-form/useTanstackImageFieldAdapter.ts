@@ -1,4 +1,4 @@
-import type { FieldApi, ReactFormExtendedApi } from "@tanstack/react-form";
+import type { ReactFormExtendedApi } from "@tanstack/react-form";
 import { useStore } from "@tanstack/react-form";
 import { useMemo, useRef } from "react";
 import type { ImageFieldAdapter } from "../core/ImageFieldAdapter";
@@ -24,34 +24,6 @@ export type AnyTanstackFormApi<TFormData> = ReactFormExtendedApi<
 	any
 >;
 
-// FieldApi: TParentData + TName + 21 validator slots. Official AnyFieldApi widens all.
-// This alias preserves TFormData / TName for value-type safety.
-export type AnyTanstackFieldApi<TFormData, TName extends string> = FieldApi<
-	TFormData,
-	TName,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any
->;
-
 export type ValidateCause = "change" | "blur" | "submit" | "server";
 
 export type UseTanstackImageFieldAdapterParams<
@@ -59,7 +31,6 @@ export type UseTanstackImageFieldAdapterParams<
 	TFormData extends FormWithImageField<TFieldName>,
 > = {
 	form: AnyTanstackFormApi<TFormData>;
-	field: AnyTanstackFieldApi<TFormData, TFieldName>;
 	name: TFieldName;
 	validateCause?: ValidateCause;
 };
@@ -71,11 +42,16 @@ const EMPTY_META_ERRORS: readonly unknown[] = Object.freeze([]);
  * Adapts TanStack Form to the ImageFieldAdapter port.
  *
  * Reactive subscription via useStore is required: reading directly causes
- * itemsWithErrors / rootErrors to go stale after validation.
+ * items / rootErrors to go stale after validation.
  *
- * Call this hook inside a React component rendered as children of
- * `<form.Field mode="array">` (calling it in the render function body
- * violates rules-of-hooks).
+ * Reads and writes go through the form store only, so this hook can be called at
+ * form level. `<form.Field mode="array">` is not required: `FormApi.validateField`
+ * falls back to form-level validators when no field instance is registered, and
+ * `FormApi.setFieldValue` populates `fieldMeta[name]` itself, so touched / dirty /
+ * per-field errors are tracked without one.
+ *
+ * `name` must be a top-level key of the form data; the store is read by plain key
+ * access rather than a nested path.
  */
 export function useTanstackImageFieldAdapter<
 	TFieldName extends string,
@@ -83,21 +59,20 @@ export function useTanstackImageFieldAdapter<
 >(
 	params: UseTanstackImageFieldAdapterParams<TFieldName, TFormData>,
 ): ImageFieldAdapter {
-	const { form, field, name, validateCause = "change" } = params;
+	const { form, name, validateCause = "change" } = params;
 
-	const anyField = field as any;
 	const anyForm = form as any;
 
 	const images = useStore(
-		anyField.store,
-		(s: { value?: Image[] }) =>
-			(s.value as Image[] | undefined) ?? (EMPTY_IMAGES as Image[]),
+		anyForm.store,
+		(s: { values?: Record<string, unknown> }) =>
+			(s.values?.[name] as Image[] | undefined) ?? (EMPTY_IMAGES as Image[]),
 	);
 
 	const metaErrors = useStore(
-		anyField.store,
-		(s: { meta?: { errors?: unknown[] } }) =>
-			s.meta?.errors ?? (EMPTY_META_ERRORS as unknown[]),
+		anyForm.store,
+		(s: { fieldMeta?: Record<string, { errors?: unknown[] } | undefined> }) =>
+			s.fieldMeta?.[name]?.errors ?? (EMPTY_META_ERRORS as unknown[]),
 	);
 	const errorMap = useStore(
 		anyForm.store,

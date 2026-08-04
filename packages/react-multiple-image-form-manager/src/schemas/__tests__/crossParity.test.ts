@@ -6,7 +6,7 @@ import {
 	invalidExistingWithBadId,
 	invalidExistingWithoutUploadedUrl,
 	invalidImageWithBadStatus,
-	invalidNewImageWithBadUploadedUrl,
+	invalidNewImageWithEmptyUploadRef,
 	invalidNewImageWithoutFile,
 	invalidNewImageWithPng,
 	makeLargeFile,
@@ -16,7 +16,9 @@ import {
 	validExistingImage,
 	validMixedImages,
 	validNewImage,
-	validNewImageWithUploadedUrl,
+	validNewImageWithOpaqueUploadRef,
+	validNewImageWithReplacesTempId,
+	validNewImageWithUrlUploadRef,
 	validToBeDeletedImage,
 } from "../__testdata__/imageSchemaTestData";
 import { createImagesSchema as createValibotSchema } from "../valibot";
@@ -59,15 +61,30 @@ describe("cross-parity: zod and valibot produce identical results", () => {
 		["valid tobedeleted image", defaultOptions, [validToBeDeletedImage], true],
 		["mixed images", defaultOptions, validMixedImages, true],
 		[
-			"new image with valid uploadedUrl",
+			"new image with url-shaped uploadRef",
 			defaultOptions,
-			[validNewImageWithUploadedUrl],
+			[validNewImageWithUrlUploadRef],
 			true,
 		],
 		[
-			"new image with invalid uploadedUrl",
+			// uploadRef は登録 API へ渡すトークンでもよい。URL 検証を復活させると
+			// この構成が弾かれる
+			"new image with opaque uploadRef",
 			defaultOptions,
-			[invalidNewImageWithBadUploadedUrl],
+			[validNewImageWithOpaqueUploadRef],
+			true,
+		],
+		[
+			// スキーマから落とすとパース時に対応が消え、getReady が元画像を戻せなくなる
+			"new image with replacesTempId",
+			defaultOptions,
+			[validNewImageWithReplacesTempId],
+			true,
+		],
+		[
+			"new image with empty uploadRef",
+			defaultOptions,
+			[invalidNewImageWithEmptyUploadRef],
 			false,
 		],
 		["invalid png file type", defaultOptions, [invalidNewImageWithPng], false],
@@ -130,7 +147,7 @@ describe("cross-parity: zod and valibot produce identical results", () => {
 		],
 		[
 			// ImageUtils の実出力は undefined フィールドのキー自体を持たない
-			// （createNew は previewUrl/uploadedUrl キーなし）。valibot は
+			// （createNew は previewUrl/uploadRef キーなし）。valibot は
 			// 「キー欠落」と「undefined 値」を区別するため、fixture の明示的
 			// undefined だけでは検知できない。実出力そのものを照合する
 			"real createNew output (missing undefined keys)",
