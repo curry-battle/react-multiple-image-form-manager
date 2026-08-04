@@ -70,7 +70,7 @@ template: |
 
   $CHANGES
 
-  **Full Changelog**: https://github.com/$OWNER/$REPO/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
 
 change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
 change-title-escapes: '\<*_&'
