@@ -97,6 +97,10 @@ jobs:
       - name: Lint
         run: pnpm run check:ci
 
+      # unit tests は Vitest Browser Mode で動くので chromium の実体が要る
+      - name: Install Playwright browsers
+        run: pnpm run test:e2e:install
+
       - name: Unit tests
         run: pnpm test
 
