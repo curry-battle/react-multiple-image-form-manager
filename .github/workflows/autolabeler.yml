@@ -1,0 +1,25 @@
+name: Auto Label
+
+# v7 で autolabeler は本体アクションから分離された。ラベルの定義は
+# .github/release-drafter.yml の autolabeler セクションを共有する。
+#
+# fork からの PR にはラベルが付かない（pull_request のトークンが read-only になるため）。
+# pull_request_target を使えば付けられるが、PR の内容で特権トークンが動く形は避ける。
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  autolabel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: release-drafter/release-drafter/autolabeler@4d75298e00d9e34c483e5ff8c68d0ea1c1940c1e # v7.5.1
+        with:
+          config-name: release-drafter.yml
