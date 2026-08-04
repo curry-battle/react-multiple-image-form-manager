@@ -100,7 +100,7 @@
 		"@vitest/browser-playwright": "4.1.10",
 		"react": "^19.1.1",
 		"react-dom": "^19.1.1",
-		"react-hook-form": "7.65.0",
+		"react-hook-form": "7.82.0",
 		"tsdown": "0.22.11",
 		"typescript": "~7.0.2",
 		"valibot": "1.4.2",
