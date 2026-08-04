@@ -2,31 +2,42 @@ name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 version-template: '$MAJOR.$MINOR.$PATCH'
 
+# バージョンはカテゴリの semver-increment から解決される。
+# v0.x のうちは breaking でも feature を使う運用なので、breaking カテゴリに
+# major を置いても実際には major へ上がらない（#23 の方針）。
 categories:
   - title: '💥 Breaking Changes'
-    labels: ['breaking']
+    semver-increment: 'major'
+    when:
+      label: 'breaking'
   - title: '🚀 Features'
-    labels: ['feature']
+    semver-increment: 'minor'
+    when:
+      label: 'feature'
   - title: '🐛 Bug Fixes'
-    labels: ['fix']
+    semver-increment: 'patch'
+    when:
+      label: 'fix'
   - title: '⚡ Performance'
-    labels: ['perf']
+    semver-increment: 'patch'
+    when:
+      label: 'perf'
   - title: '♻️ Refactoring'
-    labels: ['refactor']
+    semver-increment: 'patch'
+    when:
+      label: 'refactor'
   - title: '🧰 Maintenance'
-    labels: ['docs', 'test', 'build', 'ci', 'chore', 'revert']
+    semver-increment: 'patch'
+    when:
+      labels: ['docs', 'test', 'build', 'ci', 'chore', 'revert']
 
-exclude-labels:
-  - 'skip-changelog'
+  - type: 'pre-exclude'
+    when:
+      label: 'skip-changelog'
 
-version-resolver:
-  major:
-    labels: ['breaking']
-  minor:
-    labels: ['feature']
-  patch:
-    labels: ['fix', 'perf', 'refactor', 'docs', 'test', 'build', 'ci', 'chore', 'revert']
-  default: patch
+  # ラベルの付いていない PR の既定値。changelog には出さずに patch だけ寄与させる
+  - type: 'version-resolver'
+    semver-increment: 'patch'
 
 autolabeler:
   - label: 'breaking'
