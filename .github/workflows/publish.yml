@@ -69,8 +69,10 @@ jobs:
             exit 1
           fi
 
-      - run: pnpm install --frozen-lockfile
-
+      # install より前に bump する。verifyDepsBeforeRun が有効なため、install 後に
+      # workspace の package.json を書き換えると以降の pnpm run が全て弾かれる。
+      # バージョンは pnpm-lock.yaml に載らない（workspace 依存は link: 記録）ので
+      # --frozen-lockfile は bump 後も通る。
       - name: Bump package version
         env:
           VERSION: ${{ steps.resolve.outputs.version }}
@@ -83,6 +85,8 @@ jobs:
             exit 0
           fi
           npm version "$VERSION" --no-git-tag-version
+
+      - run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm run build
