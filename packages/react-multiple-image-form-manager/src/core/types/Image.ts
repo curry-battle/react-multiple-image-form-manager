@@ -83,6 +83,14 @@ export type LocalSubmitImage = { id: string } | { file: File; tempId: string };
  */
 export type SubmitImage = UploadedSubmitImage | LocalSubmitImage;
 
+/**
+ * 選択されたファイルを加工する（リサイズ・変換など）。加工後のファイルが項目に入る。
+ *
+ * **返す promise は必ず settle すること。** handleAdd / handleFileChange はこれを
+ * await してから選択をフォームへ反映し、`uploads.wait` はその完了を待つため、
+ * settle しないと保存が返らない（`uploadFile` 未設定でも同じ）。転送と違い中断の口が
+ * 無いので、止まりうる処理はタイムアウトで棄却すること
+ */
 export type ProcessFileFn = (file: File) => Promise<File>;
 
 export type UploadFileResult = {

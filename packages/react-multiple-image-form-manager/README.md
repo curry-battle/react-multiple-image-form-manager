@@ -349,6 +349,12 @@ atomic request never leaves items half-registered, so you will not need it there
 | `constraints` | `ImageConstraints` | Validation constraints (`acceptedTypes` / `maxFileSize` / `maxImages`) |
 | `messages` | `CoreMessages` | Custom error messages for i18n |
 
+**`processFile` must always settle its promise.** `uploads.wait()` waits for the handler
+call that awaits it, so a conversion that neither resolves nor rejects makes saving hang —
+with or without `uploadFile`. There is no `signal` to abort with, so put a timeout on
+anything that can stall and reject on it; the rejection arrives as `onError` with
+`type: "process_file"` and the item keeps the file it had.
+
 ## Schema
 
 ### Zod

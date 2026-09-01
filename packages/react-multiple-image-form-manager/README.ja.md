@@ -278,6 +278,8 @@ const promoted = ImageUtils.markSaved(image, {
 | `constraints` | `ImageConstraints` | バリデーション制約（`acceptedTypes` / `maxFileSize` / `maxImages`） |
 | `messages` | `CoreMessages` | i18n 用メッセージカスタマイズ |
 
+**`processFile` が返す promise は必ず settle させてください。** `uploads.wait()` はこれを await する handler の完了を待つため、解決も棄却もしない変換があると保存が返らなくなります（`uploadFile` の有無によらず）。中断のための `signal` は渡らないので、止まりうる処理にはタイムアウトを付けて棄却してください。棄却は `type: "process_file"` の `onError` として通知され、項目は元のファイルのまま残ります。
+
 ## スキーマ
 
 ### Zod
