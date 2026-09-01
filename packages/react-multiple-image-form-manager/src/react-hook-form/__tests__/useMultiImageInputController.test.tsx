@@ -600,3 +600,68 @@ describe("useMultiImageInputController (real schema errors via zod)", () => {
 		expect(result.current.controller.rootErrors).toHaveLength(0);
 	});
 });
+
+describe("useMultiImageInputController (uploads.wait と走行中の handler 操作)", () => {
+	function createDeferred<T>() {
+		let resolve!: (value: T) => void;
+		const promise = new Promise<T>((r) => {
+			resolve = r;
+		});
+		return { promise, resolve };
+	}
+	/** 保留中の promise がまだ settle していないことを見るための待ち */
+	const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+	const webp = () => new File(["a"], "a.webp", { type: "image/webp" });
+	const uploadRef = "https://s3.example.com/a.webp";
+
+	it("変換の解決前に settle せず、解決後に当該画像を含む ok を返すこと", async () => {
+		const converted = createDeferred<File>();
+		const { result } = await renderHook(() =>
+			useHarness({
+				processFile: () => converted.promise,
+				uploadFile: async () => ({ uploadRef }),
+			}),
+		);
+
+		let waitResult: unknown = null;
+		await act(async () => {
+			// 変換中に保存を押す状況。handleAdd は await しない
+			void result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
+			const waiting = result.current.controller.uploads.wait().then((r) => {
+				waitResult = r;
+			});
+			await flush();
+			expect(waitResult).toBeNull();
+
+			converted.resolve(webp());
+			await waiting;
+		});
+
+		expect(waitResult).toMatchObject({ ok: true, images: [{ uploadRef }] });
+	});
+
+	it("uploadFile 未設定の構成でも変換を待つこと", async () => {
+		const converted = createDeferred<File>();
+		const { result } = await renderHook(() =>
+			useHarness({ processFile: () => converted.promise }),
+		);
+
+		let waitResult: unknown = null;
+		await act(async () => {
+			void result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
+			const waiting = result.current.controller.uploads.wait().then((r) => {
+				waitResult = r;
+			});
+			await flush();
+			expect(waitResult).toBeNull();
+
+			converted.resolve(webp());
+			await waiting;
+		});
+
+		expect(waitResult).toMatchObject({
+			ok: true,
+			images: [{ file: expect.any(File) }],
+		});
+	});
+});

@@ -75,8 +75,18 @@ export type UploadsApi = {
 	/** failed の項目のみ受け付ける。それ以外は false */
 	retry: (tempId: string) => Promise<boolean>;
 	/**
-	 * 走行中の転送の完了を待ってから送信素材を返す。
-	 * uploadFile 未設定なら待つ対象が無いので即座に ok を返す
+	 * 走行中の追加・差し替えと転送の完了を待ってから送信素材を返す。
+	 *
+	 * 待つのは handleAdd / handleFileChange の走行中の呼び出しと、それが始めた
+	 * 転送。これらは選択をフォームへ反映する前に await を挟むため、呼び出しが
+	 * 終わるまではその選択が adapter.images に現れない。待たずに組むと選んだ画像が
+	 * 黙って落ちる。processFile を設定していれば変換の分だけ長くなるが、待ちは
+	 * その有無によらず、await していない呼び出しすべてに掛かる。
+	 * uploadFile 未設定でも handler の完了は待つ。
+	 *
+	 * 素材は解決した時点のフォーム値から組む。submit が検証した値と一致するとは
+	 * 限らないので、厳密に揃えるなら wait() のあとに再検証するか、submit 中の
+	 * 選択を止めること
 	 */
 	wait: () => Promise<UploadWaitResult>;
 	/**
@@ -87,7 +97,12 @@ export type UploadsApi = {
 	 *
 	 * 除外した項目が既存画像の差し替えだった場合は、元画像を同じ位置へ戻す。
 	 * 差し替え後だけを抜くと元画像の削除だけが送信され、元が消えて差し替え後も
-	 * 入らない状態になるため
+	 * 入らない状態になるため。
+	 *
+	 * 走行中の追加・差し替えは待たない。フォームへ反映される前の選択は素材に
+	 * 入らない（追加なら項目自体が無く、差し替えなら反映前の内容が入る）。
+	 * excludedTempIds にも uploads.pending にも現れないので、getReady を使う構成では
+	 * 反映の完了は利用側が握って保存を止めること
 	 */
 	getReady: () => ReadyImages;
 };
@@ -158,6 +173,10 @@ const SELF_DISCARD_LIMIT = 2;
  * ため。自己破棄として数えられない破棄経路が将来生まれても、ここで止まる
  */
 const STALLED_ROUND_LIMIT = 2;
+
+const noop = (): void => {};
+
+const changeOperationKey = (tempId: string): string => `change:${tempId}`;
 
 export function useMultiImageCore(
 	params: UseMultiImageCoreParams & { uploadFile: UploadFileFn },
@@ -444,7 +463,47 @@ export function useMultiImageCore(
 		return true;
 	}, [getVisibleCount, maxImages, msg, onError]);
 
-	const handleAdd = useCallback(
+	/**
+	 * 走行中の handler 操作。uploads.wait はこれを待ってから送信素材を組む。
+	 *
+	 * handleAdd / handleFileChange は選択をフォームへ反映する前に await を挟む
+	 * （processFile を設定していれば変換の分だけ長くなる）。その間の選択は
+	 * adapter.images にも転送台帳にも現れないので、待たずに組むと選んだ画像が
+	 * 送信素材から黙って落ちる。
+	 *
+	 * 追跡の要否を分けるのは操作の種類ではなく、フォームへの書き込みが await の
+	 * 後に来るかどうか。handleDelete / handleMove は await の前に setImages を
+	 * 終えるため、呼び出し側へ制御が戻る時点で adapter.images に反映済みになる。
+	 *
+	 * キーは操作対象。handleFileChange は同じ tempId への後着で先着を置き換える。
+	 * 先着まで待つと、後着が終わっているのに保存が返らない。
+	 * handleAdd は対象を持たないので 1 件ごとに別のキーを取り、全件が待機対象になる
+	 */
+	const operationsRef = useRef(new Map<string, Promise<void>>());
+	const addOperationSeqRef = useRef(0);
+
+	/**
+	 * 操作を待機台帳へ載せる。
+	 *
+	 * handler の呼び出しと同じ同期ブロックで呼ぶこと。解決してから載せると、
+	 * 載せる前の隙で呼ばれた uploads.wait がその操作を待ち漏らす
+	 */
+	const trackOperation = useCallback(
+		(key: string, operation: Promise<unknown>): void => {
+			// reject は待ち側へ伝播させない。adapter.setImages が同期 throw する実装では
+			// handler の promise が reject しうるが、待ち側の関心は終わったかどうかだけ
+			const settled = operation.then(noop, noop);
+			const operations = operationsRef.current;
+			operations.set(key, settled);
+			void settled.then(() => {
+				// 後着に置き換えられていたら消さない
+				if (operations.get(key) === settled) operations.delete(key);
+			});
+		},
+		[],
+	);
+
+	const runAdd = useCallback(
 		async (file: File): Promise<boolean> => {
 			if (!checkMaxImages()) return false;
 
@@ -474,7 +533,16 @@ export function useMultiImageCore(
 		[checkMaxImages, executeProcessFile, msg, safeValidate, startUpload],
 	);
 
-	const handleFileChange = useCallback(
+	const handleAdd = useCallback(
+		(file: File): Promise<boolean> => {
+			const operation = runAdd(file);
+			trackOperation(`add:${addOperationSeqRef.current++}`, operation);
+			return operation;
+		},
+		[runAdd, trackOperation],
+	);
+
+	const runFileChange = useCallback(
 		async (tempId: string, file: File): Promise<boolean> => {
 			const preIndex = getImageIndexByTempId(tempId);
 			if (preIndex === undefined) return false;
@@ -554,6 +622,15 @@ export function useMultiImageCore(
 		],
 	);
 
+	const handleFileChange = useCallback(
+		(tempId: string, file: File): Promise<boolean> => {
+			const operation = runFileChange(tempId, file);
+			trackOperation(changeOperationKey(tempId), operation);
+			return operation;
+		},
+		[runFileChange, trackOperation],
+	);
+
 	const handleDelete = useCallback(
 		async (tempId: string): Promise<boolean> => {
 			const index = getImageIndexByTempId(tempId);
@@ -581,6 +658,11 @@ export function useMultiImageCore(
 				// onError を発火しない
 				return false;
 			}
+
+			// 削除後は走行中の差し替えが解決しても書き戻す先が無い（New は項目が消え、
+			// Existing は ToBeDeleted 分岐で打ち切られる）。待機台帳に残すと、
+			// uploads.wait が送信素材に関係しない操作を待つ
+			operationsRef.current.delete(changeOperationKey(tempId));
 
 			await safeValidate();
 			return true;
@@ -757,7 +839,29 @@ export function useMultiImageCore(
 	}, [buildPayload, listUnresolved]);
 
 	const wait = useCallback(async (): Promise<UploadWaitResult> => {
+		/**
+		 * 走行中の handler 操作を待つ。待ったら true を返す。
+		 *
+		 * 待ち終えた操作は待機台帳から落ちているので、残っていれば待機中に始まった
+		 * 操作。呼び出し側は true の間もう一度呼んでそれも待つ。
+		 *
+		 * 周回数に上限は置かない。周回が続くのは新しい操作が始まったときだけで、
+		 * それは待つべき選択が増えたということ。上限で打ち切ると、まだ項目になって
+		 * いない選択を送信素材から落とすことになり、この待ち合わせの目的が消える。
+		 * 停止性は handler が返す promise が settle することに依存する。
+		 * processFile や adapter.validate が settle しない実装ではここで止まる
+		 * （UploadFileFn の doc が転送側に課しているのと同じ要求）
+		 */
+		const settleOperations = async (): Promise<boolean> => {
+			const inflight = [...operationsRef.current.values()];
+			if (inflight.length === 0) return false;
+			await Promise.all(inflight);
+			return true;
+		};
+
 		if (!uploadFileRef.current) {
+			// 転送は起きないが handler は走る。待たずに返すと項目になる前の選択が落ちる
+			while (await settleOperations()) {}
 			// 未設定の consumer では uploadRef が無いのが正常。失敗扱いすると
 			// 一度も転送を試みていない項目が failedTempIds に並ぶ
 			return { ok: true, ...buildPayload() };
@@ -780,6 +884,10 @@ export function useMultiImageCore(
 		let stalledRounds = 0;
 
 		for (;;) {
+			// 操作 → 転送の順に待つ。操作が startUpload を終える前に収束ループへ入ると、
+			// まだ始まっていない転送を待ち漏らす
+			if (await settleOperations()) continue;
+
 			const before = snapshot();
 			reissueUnresolved();
 
@@ -916,6 +1024,9 @@ export function useMultiImageCore(
 	// StrictMode の再 mount 後に転送が再開されなくなる
 	useEffect(() => {
 		return () => {
+			// 走行中の操作の結果は unmount で行き先を失う。待機台帳に残すと、
+			// 再 mount 後の uploads.wait が前の mount の操作を待つ
+			operationsRef.current.clear();
 			writeRecords((draft) => {
 				let changed = false;
 				for (const [tempId, rec] of draft) {

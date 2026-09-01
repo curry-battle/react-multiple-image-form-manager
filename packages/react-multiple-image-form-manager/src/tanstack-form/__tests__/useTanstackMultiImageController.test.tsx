@@ -4,10 +4,16 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { z } from "zod";
-import type { Image, ImageExisting, ImageNew } from "../../core/types/Image";
+import type {
+	Image,
+	ImageExisting,
+	ImageNew,
+	UploadFileFn,
+} from "../../core/types/Image";
 import type { CoreMessages } from "../../core/types/ImageSchemaTypes";
 import { ImageFormStatus } from "../../core/types/ImageStatus";
 import type { MultiImageError } from "../../core/types/MultiImageError";
+import type { UploadsApi } from "../../core/useMultiImageCore";
 import { createImagesSchema } from "../../schemas/zod";
 import { TanstackMultiImageController } from "../TanstackMultiImageController";
 
@@ -526,5 +532,116 @@ describe("TanstackMultiImageController (unsupported status parity)", () => {
 				},
 			}),
 		);
+	});
+});
+
+describe("TanstackMultiImageController (uploads.wait と走行中の handler 操作)", () => {
+	type WaitHandle = {
+		handleAdd: (file: File) => Promise<boolean>;
+		uploads: UploadsApi;
+	};
+
+	function WaitHarness(props: {
+		processFile: (file: File) => Promise<File>;
+		uploadFile?: UploadFileFn;
+		handleRef: { current: WaitHandle | null };
+	}) {
+		const form = useForm({ defaultValues: { images: [] } as TestForm });
+
+		return (
+			<TanstackMultiImageController
+				form={form}
+				name="images"
+				processFile={props.processFile}
+				uploadFile={props.uploadFile}
+				render={(p) => {
+					props.handleRef.current = {
+						handleAdd: p.handleAdd,
+						uploads: p.uploads,
+					};
+					return <div>items:{p.items.length}</div>;
+				}}
+			/>
+		);
+	}
+
+	function createDeferred<T>() {
+		let resolve!: (value: T) => void;
+		const promise = new Promise<T>((r) => {
+			resolve = r;
+		});
+		return { promise, resolve };
+	}
+	/** 保留中の promise がまだ settle していないことを見るための待ち */
+	const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+	const webp = () => new File(["a"], "a.webp", { type: "image/webp" });
+	const uploadRef = "https://s3.example.com/a.webp";
+
+	const readHandle = (ref: { current: WaitHandle | null }): WaitHandle => {
+		if (ref.current === null) throw new Error("harness is not rendered");
+		return ref.current;
+	};
+
+	it("変換の解決前に settle せず、解決後に当該画像を含む ok を返すこと", async () => {
+		const converted = createDeferred<File>();
+		const handleRef: { current: WaitHandle | null } = { current: null };
+
+		await render(
+			<WaitHarness
+				processFile={() => converted.promise}
+				uploadFile={async () => ({ uploadRef })}
+				handleRef={handleRef}
+			/>,
+		);
+
+		let waitResult: unknown = null;
+		await act(async () => {
+			// 変換中に保存を押す状況。handleAdd は await しない
+			void readHandle(handleRef).handleAdd(makeFile("a.jpg"));
+			const waiting = readHandle(handleRef)
+				.uploads.wait()
+				.then((r) => {
+					waitResult = r;
+				});
+			await flush();
+			expect(waitResult).toBeNull();
+
+			converted.resolve(webp());
+			await waiting;
+		});
+
+		expect(waitResult).toMatchObject({ ok: true, images: [{ uploadRef }] });
+	});
+
+	it("uploadFile 未設定の構成でも変換を待つこと", async () => {
+		const converted = createDeferred<File>();
+		const handleRef: { current: WaitHandle | null } = { current: null };
+
+		await render(
+			<WaitHarness
+				processFile={() => converted.promise}
+				handleRef={handleRef}
+			/>,
+		);
+
+		let waitResult: unknown = null;
+		await act(async () => {
+			void readHandle(handleRef).handleAdd(makeFile("a.jpg"));
+			const waiting = readHandle(handleRef)
+				.uploads.wait()
+				.then((r) => {
+					waitResult = r;
+				});
+			await flush();
+			expect(waitResult).toBeNull();
+
+			converted.resolve(webp());
+			await waiting;
+		});
+
+		expect(waitResult).toMatchObject({
+			ok: true,
+			images: [{ file: expect.any(File) }],
+		});
 	});
 });
