@@ -158,7 +158,7 @@ There is exactly one decision, and one follow-up.
 Do you pass uploadFile?
 ├─ yes → upload on select. The library owns the transfer.
 │          └─ before submitting:
-│              ├─ uploads.wait()      … wait for every running transfer
+│              ├─ uploads.wait()      … wait for every running add/replace and transfer
 │              └─ uploads.getReady()  … don't wait; leave the unfinished ones out
 │
 └─ no  → the library never transfers. It hands you the File.
@@ -174,7 +174,7 @@ give you `{ file, tempId }` so you can do it whenever you like.
 | When | on file select | you decide |
 | `uploads.pending` / `failed` / `retry` | usable | always empty / no-op |
 | `items[].uploadState` | pending / failed / progress | always `undefined` |
-| `wait()` | waits for transfers | nothing to wait for, returns `ok` right away |
+| `wait()` | waits for adds/replacements and transfers | waits for adds/replacements only |
 | `getReady()` | leaves unfinished items out | leaves nothing out |
 | Submit payload | `{ id } \| { uploadRef }` | `{ id } \| { file, tempId }` |
 
@@ -213,10 +213,25 @@ the array is deleted" takes it unchanged.
 For an API that wants deletions spelled out, `waited.deletedIds` carries the ids of the
 existing images the user removed.
 
-Without `uploadFile` there is nothing to transfer, so `wait()` returns `ok` immediately and
-new items come back as `{ file, tempId }` for you to upload yourself. Only that variant
-carries `tempId` — `{ id }` and `{ uploadRef }` go to the server as-is, while `{ file }` is
-something you process, so it needs a key to point at when one of them fails.
+`wait()` also waits for `handleAdd` / `handleFileChange` calls that are still running.
+Those handlers await before they write the selection to the form, so **until the call
+finishes the picked file is not in the form yet** — without that wait it drops out of the
+payload silently.
+`processFile` widens that gap by the conversion it runs, but the wait applies with or
+without it, to any handler call you did not await.
+
+When the user re-picks a file for the same item, only the latest replacement is waited
+for — an earlier one still running is not.
+
+`waited.images` is built from the form values as of the moment the wait resolves, which
+**is not necessarily what submit validated.** To line the two up exactly, re-validate after
+`wait()` or block selection while it is pending.
+
+Without `uploadFile` nothing transfers, so `wait()` waits only for running adds and
+replacements before returning `ok`, and new items come back as `{ file, tempId }` to upload
+yourself. Only that variant carries `tempId` — `{ id }` and `{ uploadRef }` go to the
+server as-is, while `{ file }` is something you process, so it needs a key to point at when
+one of them fails.
 
 To save without waiting, use `uploads.getReady()`. It is synchronous and cannot fail:
 
@@ -237,12 +252,18 @@ that original is put back at the same position instead of being deleted. Both tr
 together on the next save, so a mid-replacement `getReady()` never deletes the old image
 without adding the new one.
 
+**`getReady()` does not wait for running adds or replacements.** A selection not yet
+written to the form stays out of the payload — an add contributes no item at all, a
+replacement contributes what the item held before it — and shows up in neither
+`excludedTempIds` nor `uploads.pending`. If you rely on `getReady()`, track those calls
+yourself and hold the save.
+
 | Member | Type | Description |
 |--------|------|-------------|
 | `pending` | `string[]` | tempIds currently in flight |
 | `failed` | `string[]` | tempIds whose transfer failed |
 | `retry` | `(tempId: string) => Promise<boolean>` | Re-run a **failed** transfer. Returns `false` for anything else |
-| `wait` | `() => Promise<UploadWaitResult>` | Wait for running transfers, then hand back the payload |
+| `wait` | `() => Promise<UploadWaitResult>` | Wait for running adds/replacements and transfers, then hand back the payload |
 | `getReady` | `() => ReadyImages` | Same payload without waiting. Synchronous, cannot fail |
 
 > **Prefer the hooks.** `useMultiImageInputController` /

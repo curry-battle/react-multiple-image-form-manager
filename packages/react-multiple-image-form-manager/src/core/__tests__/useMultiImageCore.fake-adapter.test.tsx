@@ -64,6 +64,8 @@ function useFakeAdapter(
 	errors?: ImagesError,
 	/** read のたびに File を作り直す契約違反の adapter を模倣する */
 	cloneOnRead = false,
+	/** setImages が同期 throw する adapter を模倣する */
+	throwOnSetImages = false,
 ) {
 	const [, force] = useState(0);
 	const imagesRef = useRef<Image[]>(initial);
@@ -93,6 +95,7 @@ function useFakeAdapter(
 			);
 		},
 		setImages(next) {
+			if (throwOnSetImages) throw new Error("setImages failed");
 			imagesRef.current = next;
 			force((n) => n + 1);
 		},
@@ -117,6 +120,7 @@ async function renderCore(
 		messages?: CoreMessages;
 		wrapper?: React.JSXElementConstructor<{ children: React.ReactNode }>;
 		cloneOnRead?: boolean;
+		throwOnSetImages?: boolean;
 	} = {},
 ) {
 	const ref: {
@@ -131,6 +135,7 @@ async function renderCore(
 				initial,
 				options.errors,
 				options.cloneOnRead,
+				options.throwOnSetImages,
 			);
 			ref.adapter = adapter;
 			ref.validate = validate;
@@ -2201,6 +2206,235 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			expect(result.current.items[0].uploadState).toMatchObject({
 				status: "failed",
 			});
+		});
+	});
+
+	describe("uploads.wait と走行中の handler 操作", () => {
+		const url = (name: string) => `https://s3.example.com/${name}`;
+		const jpeg = (name: string) =>
+			new File([name], name, { type: "image/jpeg" });
+		const webp = (name: string) =>
+			new File([name], name, { type: "image/webp" });
+		/** 保留中の promise がまだ settle していないことを見るための待ち */
+		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+		it("processFile 無しでも、項目になるまで待つこと", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: url("a.jpg") }));
+			const { result } = await renderCore([], { uploadFile });
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				// 待つのは変換ではなく handler の呼び出し。processFile を設定して
+				// いなくても、項目を作る前に await を挟むので同じ窓ができる
+				void result.current.handlers.handleAdd(jpeg("a.jpg"));
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("a.jpg") }],
+			});
+		});
+
+		it("変換の解決前に settle せず、解決後に当該画像を含む ok を返すこと", async () => {
+			const converted = createDeferred<File>();
+			const uploadFile = vi.fn(async () => ({ uploadRef: url("a.webp") }));
+			const { result } = await renderCore([], {
+				processFile: () => converted.promise,
+				uploadFile,
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				// 変換中に保存を押す状況。handleAdd は await しない
+				void result.current.handlers.handleAdd(jpeg("a.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				await flush();
+				expect(waitResult).toBeNull();
+
+				converted.resolve(webp("a.webp"));
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("a.webp") }],
+			});
+		});
+
+		it("変換が解決しても転送の完了まで待つこと", async () => {
+			const converted = createDeferred<File>();
+			const uploaded = createDeferred<UploadFileResult>();
+			const uploadFile = vi.fn(async () => uploaded.promise);
+			const { result } = await renderCore([], {
+				processFile: () => converted.promise,
+				uploadFile,
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				void result.current.handlers.handleAdd(jpeg("a.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				converted.resolve(webp("a.webp"));
+				await flush();
+				// 変換は解決したが転送はまだ
+				expect(waitResult).toBeNull();
+
+				uploaded.resolve({ uploadRef: url("a.webp") });
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("a.webp") }],
+			});
+		});
+
+		it("uploadFile 未設定の構成でも変換を待つこと", async () => {
+			const converted = createDeferred<File>();
+			const { result } = await renderCore([], {
+				processFile: () => converted.promise,
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				void result.current.handlers.handleAdd(jpeg("a.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				await flush();
+				expect(waitResult).toBeNull();
+
+				converted.resolve(webp("a.webp"));
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ file: expect.any(File) }],
+			});
+		});
+
+		it("待機中に始まった変換も待つこと", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let conversionCall = 0;
+			const processFile = vi.fn(() => conversions[conversionCall++].promise);
+			const uploaded = [
+				createDeferred<UploadFileResult>(),
+				createDeferred<UploadFileResult>(),
+			];
+			let uploadCall = 0;
+			const uploadFile = vi.fn(async () => uploaded[uploadCall++].promise);
+			const { result } = await renderCore([], { processFile, uploadFile });
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				void result.current.handlers.handleAdd(jpeg("a.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+
+				conversions[0].resolve(webp("a.webp"));
+				await flush();
+				// 1 件目の転送を待っている間に 2 件目の選択を始める
+				void result.current.handlers.handleAdd(jpeg("b.jpg"));
+				uploaded[0].resolve({ uploadRef: url("a.webp") });
+				await flush();
+				expect(waitResult).toBeNull();
+
+				conversions[1].resolve(webp("b.webp"));
+				await flush();
+				uploaded[1].resolve({ uploadRef: url("b.webp") });
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({
+				ok: true,
+				images: [{ uploadRef: url("a.webp") }, { uploadRef: url("b.webp") }],
+			});
+		});
+
+		it("削除した項目の変換は待たないこと", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
+				conversions[0].resolve(webp("a.webp"));
+				await adding;
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				// 変換を保留したまま削除する。2 本目は解決させない
+				void result.current.handlers.handleFileChange(tempId, jpeg("b.jpg"));
+				await result.current.handlers.handleDelete(tempId);
+				waitResult = await result.current.uploads.wait();
+			});
+
+			expect(waitResult).toMatchObject({ ok: true, images: [] });
+			expect(result.current.raw.watchedImages).toHaveLength(0);
+		});
+
+		it("handler が reject しても wait() は reject しないこと", async () => {
+			const converted = createDeferred<File>();
+			const { result } = await renderCore([], {
+				processFile: () => converted.promise,
+				throwOnSetImages: true,
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				// setImages が同期 throw する adapter では handler の promise が reject する
+				void result.current.handlers.handleAdd(jpeg("a.jpg")).catch(() => {});
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				converted.resolve(webp("a.webp"));
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({ ok: true, images: [] });
+		});
+
+		it("選び直しの先着の変換は待たないこと", async () => {
+			const conversions = [
+				createDeferred<File>(),
+				createDeferred<File>(),
+				createDeferred<File>(),
+			];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
+				conversions[0].resolve(webp("a.webp"));
+				await adding;
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				// 先着 (b) は解決させないまま後着 (c) を選ぶ
+				void result.current.handlers.handleFileChange(tempId, jpeg("b.jpg"));
+				void result.current.handlers.handleFileChange(tempId, jpeg("c.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				conversions[2].resolve(webp("c.webp"));
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({ ok: true });
+			expect(result.current.raw.watchedImages).toHaveLength(1);
 		});
 	});
 
