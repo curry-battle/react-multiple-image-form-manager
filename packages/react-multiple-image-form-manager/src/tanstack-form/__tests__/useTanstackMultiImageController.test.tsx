@@ -502,6 +502,106 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 		expect(imgs).toHaveLength(1);
 		expect(imgs[0].tempId).toBe(b);
 	});
+
+	it("handleFileChange: 続けて選び直したら後着のファイルが残る", async () => {
+		const { processFile, resolveAll } = createDeferredProcessFile();
+		const handleRef: { current: Handle | null } = { current: null };
+
+		await render(
+			<RaceHarness processFile={processFile} handleRef={handleRef} />,
+		);
+
+		await act(async () => {
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			const add = handleRef.current!.handleAdd(makeFile("a.jpg"));
+			resolveAll();
+			await add;
+		});
+		const a = handleRef.current?.raw.watchedImages[0].tempId ?? "";
+
+		let first!: Promise<boolean>;
+		let second!: Promise<boolean>;
+		await act(async () => {
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			first = handleRef.current!.handleFileChange(a, makeFile("file1.jpg"));
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			second = handleRef.current!.handleFileChange(a, makeFile("file2.jpg"));
+			// resolveAll は登録順に解決するので、先着が先に解決する
+			resolveAll();
+		});
+
+		expect(await first).toBe(false);
+		expect(await second).toBe(true);
+		const imgs = handleRef.current?.raw.watchedImages ?? [];
+		expect(imgs).toHaveLength(1);
+		expect(imgs[0].file?.name).toBe("file2.jpg");
+	});
+
+	it("handleFileChange: processFile 中に New の対象自身を削除したら復活しない", async () => {
+		const { processFile, resolveAll } = createDeferredProcessFile();
+		const handleRef: { current: Handle | null } = { current: null };
+
+		await render(
+			<RaceHarness processFile={processFile} handleRef={handleRef} />,
+		);
+
+		await act(async () => {
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			const add = handleRef.current!.handleAdd(makeFile("a.jpg"));
+			resolveAll();
+			await add;
+		});
+		const a = handleRef.current?.raw.watchedImages[0].tempId ?? "";
+
+		let changeResult!: Promise<boolean>;
+		await act(async () => {
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			changeResult = handleRef.current!.handleFileChange(
+				a,
+				makeFile("replaced.jpg"),
+			);
+			await handleRef.current?.handleDelete(a);
+			resolveAll();
+		});
+
+		expect(await changeResult).toBe(false);
+		expect(handleRef.current?.raw.watchedImages).toHaveLength(0);
+	});
+
+	it("handleFileChange: processFile 中に Existing の対象自身を削除したら onError なしで ToBeDeleted のまま", async () => {
+		const onError = vi.fn();
+		const { processFile, resolveAll } = createDeferredProcessFile();
+		const handleRef: { current: Handle | null } = { current: null };
+
+		await render(
+			<RaceHarness
+				initialImages={[makeExistingImage("temp_a", "id-a")]}
+				processFile={processFile}
+				onError={onError}
+				handleRef={handleRef}
+			/>,
+		);
+
+		let changeResult!: Promise<boolean>;
+		await act(async () => {
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			changeResult = handleRef.current!.handleFileChange(
+				"temp_a",
+				makeFile("replaced.jpg"),
+			);
+			await handleRef.current?.handleDelete("temp_a");
+			resolveAll();
+		});
+
+		expect(await changeResult).toBe(false);
+		const imgs = handleRef.current?.raw.watchedImages ?? [];
+		expect(imgs).toHaveLength(1);
+		expect(imgs[0]).toMatchObject({
+			tempId: "temp_a",
+			status: ImageFormStatus.ToBeDeleted,
+		});
+		expect(onError).not.toHaveBeenCalled();
+	});
 });
 
 describe("TanstackMultiImageController (unsupported status parity)", () => {
