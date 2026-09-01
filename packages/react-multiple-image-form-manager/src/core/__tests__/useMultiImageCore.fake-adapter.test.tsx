@@ -455,6 +455,429 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 	});
 
+	describe("handleFileChange の選び直し競合", () => {
+		const jpeg = (name: string) =>
+			new File([name], name, { type: "image/jpeg" });
+		const webp = (name: string) =>
+			new File([name], name, { type: "image/webp" });
+		/** 解決の順序を分けるための待ち。同一 microtask にまとめない */
+		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+		/**
+		 * フォーム state をフックの外に置き、mount を跨いで共有するハーネス。
+		 *
+		 * adapter.images は同梱アダプタと同じく最後のレンダー値で凍結される一方、
+		 * setImages は生きたストアへ届く。この非対称が unmount 後の書き戻しで項目が
+		 * 巻き戻る原因になる。変換を保留するのは最初の 1 件だけで、再 mount 側の
+		 * 操作は止めない
+		 */
+		function sharedStoreHarness(store: { images: Image[] }) {
+			const converted = createDeferred<File>();
+			let call = 0;
+			const processFile = (file: File) =>
+				call++ === 0 ? converted.promise : Promise.resolve(file);
+
+			const mount = () =>
+				renderHook(() => {
+					const [, force] = useState(0);
+					const imagesRef = useRef(store.images);
+					imagesRef.current = store.images;
+					const adapter: ImageFieldAdapter = {
+						get images() {
+							return imagesRef.current;
+						},
+						setImages(next) {
+							store.images = next;
+							imagesRef.current = next;
+							force((n) => n + 1);
+						},
+						validate: async () => {},
+						errors: { items: [], root: [] },
+					};
+					return useMultiImageCore({ adapter, processFile });
+				});
+
+			return { mount, resolveFirstConversion: converted.resolve };
+		}
+
+		/**
+		 * 同じ項目へ 2 回続けて選び、指定した順に変換を解決する。
+		 *
+		 * order は解決させる変換の添字。file1 が先着、file2 が後着
+		 */
+		async function rePick(
+			initial: Image[],
+			tempId: string,
+			order: [0 | 1, 0 | 1],
+		) {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			const converted = [webp("file1.webp"), webp("file2.webp")];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result } = await renderCore(initial, { processFile });
+
+			const results: boolean[] = [];
+			await act(async () => {
+				const first = result.current.handlers.handleFileChange(
+					tempId,
+					jpeg("file1.jpg"),
+				);
+				const second = result.current.handlers.handleFileChange(
+					tempId,
+					jpeg("file2.jpg"),
+				);
+				conversions[order[0]].resolve(converted[order[0]]);
+				await flush();
+				conversions[order[1]].resolve(converted[order[1]]);
+				results.push(...(await Promise.all([first, second])));
+			});
+			return { result, first: results[0], second: results[1] };
+		}
+
+		it("New: 先着の変換が先に解決しても後着のファイルが残ること", async () => {
+			const target = makeNewImage({ tempId: "temp_new" });
+			const { result, first, second } = await rePick(
+				[target],
+				"temp_new",
+				[0, 1],
+			);
+
+			const images = result.current.raw.watchedImages;
+			expect(images).toHaveLength(1);
+			expect(images[0].tempId).toBe("temp_new");
+			expect(images[0].file?.name).toBe("file2.webp");
+			expect(first).toBe(false);
+			expect(second).toBe(true);
+		});
+
+		it("New: 後着の変換が先に解決しても後着のファイルが残ること", async () => {
+			const target = makeNewImage({ tempId: "temp_new" });
+			const { result, first, second } = await rePick(
+				[target],
+				"temp_new",
+				[1, 0],
+			);
+
+			const images = result.current.raw.watchedImages;
+			expect(images).toHaveLength(1);
+			expect(images[0].file?.name).toBe("file2.webp");
+			expect(first).toBe(false);
+			expect(second).toBe(true);
+		});
+
+		it("Existing: 先着の変換が先に解決しても後着のファイルが残ること", async () => {
+			const target = makeExistingImage({ tempId: "temp_existing" });
+			const { result, first, second } = await rePick(
+				[target],
+				"temp_existing",
+				[0, 1],
+			);
+
+			const images = result.current.raw.watchedImages;
+			// 差し替えは 1 回だけ成立する。元画像は末尾で ToBeDeleted
+			expect(images).toHaveLength(2);
+			const created = images.filter((i) => i.status === ImageFormStatus.New);
+			expect(created).toHaveLength(1);
+			expect(created[0].file?.name).toBe("file2.webp");
+			expect(images[1]).toMatchObject({
+				tempId: "temp_existing",
+				status: ImageFormStatus.ToBeDeleted,
+			});
+			expect(first).toBe(false);
+			expect(second).toBe(true);
+		});
+
+		it("Existing: 後着の変換が先に解決しても後着のファイルが残ること", async () => {
+			const target = makeExistingImage({ tempId: "temp_existing" });
+			const { result, first, second } = await rePick(
+				[target],
+				"temp_existing",
+				[1, 0],
+			);
+
+			const images = result.current.raw.watchedImages;
+			expect(images).toHaveLength(2);
+			const created = images.filter((i) => i.status === ImageFormStatus.New);
+			expect(created).toHaveLength(1);
+			expect(created[0].file?.name).toBe("file2.webp");
+			expect(images[1]).toMatchObject({
+				tempId: "temp_existing",
+				status: ImageFormStatus.ToBeDeleted,
+			});
+			expect(first).toBe(false);
+			expect(second).toBe(true);
+		});
+
+		it("捨てた先着のファイルは転送されないこと", async () => {
+			const uploaded: string[] = [];
+			const uploadFile = vi.fn(async (file: File) => {
+				uploaded.push(file.name);
+				return { uploadRef: `https://s3.example.com/${file.name}` };
+			});
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result } = await renderCore([], { processFile, uploadFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.handleAdd(jpeg("origin.jpg"));
+				conversions[0].resolve(webp("origin.webp"));
+				await adding;
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			conversions.push(createDeferred<File>(), createDeferred<File>());
+			await act(async () => {
+				const first = result.current.handlers.handleFileChange(
+					tempId,
+					jpeg("file1.jpg"),
+				);
+				const second = result.current.handlers.handleFileChange(
+					tempId,
+					jpeg("file2.jpg"),
+				);
+				conversions[1].resolve(webp("file1.webp"));
+				await flush();
+				conversions[2].resolve(webp("file2.webp"));
+				await Promise.all([first, second]);
+			});
+
+			// 捨てた先着が転送を始めると、結果が使われない転送が 1 本増える
+			expect(uploaded).not.toContain("file1.webp");
+			expect(uploaded).toContain("file2.webp");
+		});
+
+		it("後着の変換が失敗したら先着も復活せず選び直す前のファイルが残ること", async () => {
+			let rejectSecond!: (reason: unknown) => void;
+			const failed = new Promise<File>((_, reject) => {
+				rejectSecond = reject;
+			});
+			const succeeded = createDeferred<File>();
+			const conversions = [succeeded.promise, failed];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++]);
+			const onError = vi.fn();
+			const { result } = await renderCore(
+				[makeNewImage({ tempId: "temp_new" })],
+				{ processFile, onError },
+			);
+
+			const results: boolean[] = [];
+			await act(async () => {
+				const first = result.current.handlers.handleFileChange(
+					"temp_new",
+					jpeg("file1.jpg"),
+				);
+				const second = result.current.handlers.handleFileChange(
+					"temp_new",
+					jpeg("file2.jpg"),
+				);
+				rejectSecond(new Error("convert failed"));
+				await flush();
+				succeeded.resolve(webp("file1.webp"));
+				results.push(...(await Promise.all([first, second])));
+			});
+
+			expect(results).toEqual([false, false]);
+			// 後着が失敗しても、ユーザーが捨てた先着に戻したりはしない
+			expect(result.current.raw.watchedImages[0].file?.name).toBe("test.jpg");
+			expect(onError).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "process_file" }),
+			);
+		});
+
+		it("捨てた先着でも、その変換が失敗すれば onError が飛ぶこと", async () => {
+			let rejectFirst!: (reason: unknown) => void;
+			const failed = new Promise<File>((_, reject) => {
+				rejectFirst = reject;
+			});
+			const succeeded = createDeferred<File>();
+			const conversions = [failed, succeeded.promise];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++]);
+			const onError = vi.fn();
+			const { result } = await renderCore(
+				[makeNewImage({ tempId: "temp_new" })],
+				{ processFile, onError },
+			);
+
+			const results: boolean[] = [];
+			await act(async () => {
+				const first = result.current.handlers.handleFileChange(
+					"temp_new",
+					jpeg("file1.jpg"),
+				);
+				const second = result.current.handlers.handleFileChange(
+					"temp_new",
+					jpeg("file2.jpg"),
+				);
+				succeeded.resolve(webp("file2.webp"));
+				await flush();
+				rejectFirst(new Error("convert failed"));
+				results.push(...(await Promise.all([first, second])));
+			});
+
+			// この onError は項目の状態ではない。項目は後着のファイルを表示している
+			expect(onError).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "process_file" }),
+			);
+			expect(results).toEqual([false, true]);
+			expect(result.current.raw.watchedImages[0].file?.name).toBe("file2.webp");
+		});
+
+		it("unmount 後に解決した差し替えは書き戻されないこと", async () => {
+			const converted = createDeferred<File>();
+			const { result, ref, unmount } = await renderCore(
+				[makeNewImage({ tempId: "temp_new" })],
+				{ processFile: () => converted.promise },
+			);
+
+			let changing!: Promise<boolean>;
+			await act(async () => {
+				changing = result.current.handlers.handleFileChange(
+					"temp_new",
+					jpeg("file1.jpg"),
+				);
+			});
+
+			await unmount();
+
+			let changed = true;
+			await act(async () => {
+				converted.resolve(webp("file1.webp"));
+				changed = await changing;
+			});
+
+			expect(changed).toBe(false);
+			expect(ref.adapter?.images[0].file?.name).toBe("test.jpg");
+		});
+
+		it("再 mount 後に解決した差し替えが、あとから追加された項目を巻き戻さないこと", async () => {
+			const store = {
+				images: [makeNewImage({ tempId: "temp_new" })] as Image[],
+			};
+			const { mount, resolveFirstConversion } = sharedStoreHarness(store);
+
+			const first = await mount();
+			let changing!: Promise<boolean>;
+			await act(async () => {
+				changing = first.result.current.handlers.handleFileChange(
+					"temp_new",
+					jpeg("file1.jpg"),
+				);
+			});
+			await first.unmount();
+
+			const second = await mount();
+			await act(async () => {
+				await second.result.current.handlers.handleAdd(jpeg("added.jpg"));
+			});
+
+			await act(async () => {
+				resolveFirstConversion(webp("file1.webp"));
+				await changing;
+			});
+
+			expect(store.images).toHaveLength(2);
+			expect(store.images[0].file?.name).toBe("test.jpg");
+			await second.unmount();
+		});
+
+		it("再 mount 後に解決した追加が、あとから追加された項目を巻き戻さないこと", async () => {
+			const store = { images: [] as Image[] };
+			const { mount, resolveFirstConversion } = sharedStoreHarness(store);
+
+			const first = await mount();
+			let adding!: Promise<boolean>;
+			await act(async () => {
+				adding = first.result.current.handlers.handleAdd(jpeg("file1.jpg"));
+			});
+			await first.unmount();
+
+			const second = await mount();
+			await act(async () => {
+				await second.result.current.handlers.handleAdd(jpeg("added.jpg"));
+			});
+
+			await act(async () => {
+				resolveFirstConversion(webp("file1.webp"));
+				await adding;
+			});
+
+			expect(store.images).toHaveLength(1);
+			expect(store.images[0].file?.name).toBe("added.jpg");
+			await second.unmount();
+		});
+
+		it("unmount で走行中の wait が解放されること", async () => {
+			// 変換が返らないまま画面を離れるケース。待ち続けると保存が永久に返らない
+			const { result, unmount } = await renderCore([], {
+				processFile: () => new Promise<File>(() => {}),
+			});
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				void result.current.handlers.handleAdd(jpeg("a.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				await unmount();
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({ ok: true });
+		});
+
+		it("New: 変換中に削除したら解決しても項目が復活しないこと", async () => {
+			const converted = createDeferred<File>();
+			const { result } = await renderCore(
+				[makeNewImage({ tempId: "temp_new" })],
+				{ processFile: () => converted.promise },
+			);
+
+			let changed = true;
+			await act(async () => {
+				const changing = result.current.handlers.handleFileChange(
+					"temp_new",
+					jpeg("file1.jpg"),
+				);
+				await result.current.handlers.handleDelete("temp_new");
+				converted.resolve(webp("file1.webp"));
+				changed = await changing;
+			});
+
+			expect(changed).toBe(false);
+			expect(result.current.raw.watchedImages).toHaveLength(0);
+		});
+
+		it("Existing: 変換中に削除したら解決しても ToBeDeleted のままであること", async () => {
+			const converted = createDeferred<File>();
+			const { result } = await renderCore(
+				[makeExistingImage({ tempId: "temp_existing" })],
+				{ processFile: () => converted.promise },
+			);
+
+			let changed = true;
+			await act(async () => {
+				const changing = result.current.handlers.handleFileChange(
+					"temp_existing",
+					jpeg("file1.jpg"),
+				);
+				await result.current.handlers.handleDelete("temp_existing");
+				converted.resolve(webp("file1.webp"));
+				changed = await changing;
+			});
+
+			expect(changed).toBe(false);
+			const images = result.current.raw.watchedImages;
+			expect(images).toHaveLength(1);
+			expect(images[0]).toMatchObject({
+				tempId: "temp_existing",
+				status: ImageFormStatus.ToBeDeleted,
+			});
+		});
+	});
+
 	describe("メッセージのカスタマイズ", () => {
 		it("[messages] maxImages 到達時に messages.maxImages のカスタム文言が onError に載る", async () => {
 			const onError = vi.fn();
@@ -2436,6 +2859,66 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			expect(waitResult).toMatchObject({ ok: true });
 			expect(result.current.raw.watchedImages).toHaveLength(1);
 		});
+
+		it("待機を始めたあとに選び直しても、捨てた先着の変換は待たないこと", async () => {
+			const conversions = [
+				createDeferred<File>(),
+				createDeferred<File>(),
+				createDeferred<File>(),
+			];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
+				conversions[0].resolve(webp("a.webp"));
+				await adding;
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				// 選び直しより先に待機を始めるのがこのテストの要点
+				void result.current.handlers.handleFileChange(tempId, jpeg("b.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				void result.current.handlers.handleFileChange(tempId, jpeg("c.jpg"));
+				conversions[2].resolve(webp("c.webp"));
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({ ok: true });
+			expect(result.current.raw.watchedImages[0].file?.name).toBe("c.webp");
+		});
+
+		it("待機中に削除したら、その項目の変換を待たないこと", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
+				conversions[0].resolve(webp("a.webp"));
+				await adding;
+			});
+			const tempId = result.current.raw.watchedImages[0].tempId;
+
+			let waitResult: unknown = null;
+			await act(async () => {
+				void result.current.handlers.handleFileChange(tempId, jpeg("b.jpg"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waitResult = r;
+				});
+				// 2 本目は解決させない。削除で待機対象から外れる
+				await result.current.handlers.handleDelete(tempId);
+				await waiting;
+			});
+
+			expect(waitResult).toMatchObject({ ok: true, images: [] });
+		});
 	});
 
 	describe("StrictMode", () => {
@@ -2478,6 +2961,29 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			expect(signals.filter((s) => s?.aborted === false)).toHaveLength(1);
 			expect(result.current.uploads.pending).toHaveLength(0);
 			expect(result.current.uploads.failed).toHaveLength(0);
+		});
+
+		it("cleanup を跨いでも、その後に始めた差し替えは commit されること", async () => {
+			// 現行の掃除が effect の cleanup にあるため、範囲を誤ると StrictMode でだけ
+			// 差し替えが commit されなくなる
+			const converted = createDeferred<File>();
+			const { result } = await renderCore(
+				[makeNewImage({ tempId: "temp_new" })],
+				{ processFile: () => converted.promise, wrapper: StrictMode },
+			);
+
+			let changed = false;
+			await act(async () => {
+				const changing = result.current.handlers.handleFileChange(
+					"temp_new",
+					new File(["b"], "b.jpg", { type: "image/jpeg" }),
+				);
+				converted.resolve(new File(["b"], "b.webp", { type: "image/webp" }));
+				changed = await changing;
+			});
+
+			expect(changed).toBe(true);
+			expect(result.current.raw.watchedImages[0].file?.name).toBe("b.webp");
 		});
 	});
 

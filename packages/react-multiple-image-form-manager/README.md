@@ -220,8 +220,20 @@ payload silently.
 `processFile` widens that gap by the conversion it runs, but the wait applies with or
 without it, to any handler call you did not await.
 
-When the user re-picks a file for the same item, only the latest replacement is waited
-for — an earlier one still running is not.
+When the user re-picks a file for the same item, **the last pick always wins**, whichever
+order the two conversions resolve in. The discarded call resolves to `false` because it
+wrote nothing, and `wait()` does not wait for it. Deleting an item while a replacement is
+running keeps it deleted.
+
+**An `onError` with `type: "process_file"` is about a file, not an item.** A pick that was
+already superseded — or whose item was deleted — still reports its own conversion failure,
+even though it wrote nothing. And when the latest pick fails, the item keeps the file it
+had: a discarded earlier pick is never resurrected. Word the message after the file, and
+read the item's state from `items`.
+
+The library does not block re-picking or deleting while a conversion runs. That is a UI
+decision for your app; what the library guarantees is that the race cannot corrupt the
+form and that the outcome above is what you get.
 
 `waited.images` is built from the form values as of the moment the wait resolves, which
 **is not necessarily what submit validated.** To line the two up exactly, re-validate after
@@ -336,6 +348,12 @@ atomic request never leaves items half-registered, so you will not need it there
 | `onError` | `(error: MultiImageError) => void` | Error handler for `processFile` failures, `uploadFile` failures, or `maxImages` exceeded |
 | `constraints` | `ImageConstraints` | Validation constraints (`acceptedTypes` / `maxFileSize` / `maxImages`) |
 | `messages` | `CoreMessages` | Custom error messages for i18n |
+
+**`processFile` must always settle its promise.** `uploads.wait()` waits for the handler
+call that awaits it, so a conversion that neither resolves nor rejects makes saving hang —
+with or without `uploadFile`. There is no `signal` to abort with, so put a timeout on
+anything that can stall and reject on it; the rejection arrives as `onError` with
+`type: "process_file"` and the item keeps the file it had.
 
 ## Schema
 

@@ -176,7 +176,29 @@ const STALLED_ROUND_LIMIT = 2;
 
 const noop = (): void => {};
 
-const changeOperationKey = (tempId: string): string => `change:${tempId}`;
+/**
+ * 選択の競合単位。同じ値どうしだけが競合し、後着が現行になる。
+ *
+ * 差し替えは同じ項目への選び直しと競合するので tempId から、追加は競合相手が
+ * いないので 1 件ごとに別の値を作る。接頭辞で分けるのは、追加が採番する tempId と
+ * 衝突させないため
+ */
+type SelectionKey = string;
+
+const fileChangeKey = (tempId: string): SelectionKey => `change:${tempId}`;
+
+/**
+ * 反映が終わっていない選択。handleAdd / handleFileChange の 1 回の呼び出しに対応し、
+ * この値の参照そのものが「現行は自分だ」という印になる。
+ *
+ * `settled` は反映の完了か `displace()` の早いほうで解決する。現行を降りた選択の
+ * 結果は捨てられるので、待ち続けると後着が終わっているのに保存が返らない
+ */
+type CurrentSelection = {
+	settled: Promise<void>;
+	/** 現行を降りたことを待ち側へ伝える。解決済みの選択に呼んでも無害 */
+	displace: () => void;
+};
 
 export function useMultiImageCore(
 	params: UseMultiImageCoreParams & { uploadFile: UploadFileFn },
@@ -464,47 +486,66 @@ export function useMultiImageCore(
 	}, [getVisibleCount, maxImages, msg, onError]);
 
 	/**
-	 * 走行中の handler 操作。uploads.wait はこれを待ってから送信素材を組む。
+	 * 競合単位ごとの現行の選択。uploads.wait はこれを待ってから送信素材を組む。
 	 *
 	 * handleAdd / handleFileChange は選択をフォームへ反映する前に await を挟む
-	 * （processFile を設定していれば変換の分だけ長くなる）。その間の選択は
-	 * adapter.images にも転送台帳にも現れないので、待たずに組むと選んだ画像が
-	 * 送信素材から黙って落ちる。
+	 * （processFile を設定していれば変換の分だけ長い）。その間の選択は adapter.images
+	 * にも転送台帳にも現れないので、待たずに組むと選んだ画像が黙って落ちる。
 	 *
-	 * 追跡の要否を分けるのは操作の種類ではなく、フォームへの書き込みが await の
-	 * 後に来るかどうか。handleDelete / handleMove は await の前に setImages を
-	 * 終えるため、呼び出し側へ制御が戻る時点で adapter.images に反映済みになる。
-	 *
-	 * キーは操作対象。handleFileChange は同じ tempId への後着で先着を置き換える。
-	 * 先着まで待つと、後着が終わっているのに保存が返らない。
-	 * handleAdd は対象を持たないので 1 件ごとに別のキーを取り、全件が待機対象になる
+	 * 追跡の要否は handler の種類ではなく、フォームへの書き込みが await の後に来るかで
+	 * 決まる。handleDelete / handleMove は await の前に書き終える
 	 */
-	const operationsRef = useRef(new Map<string, Promise<void>>());
-	const addOperationSeqRef = useRef(0);
+	const currentSelectionsRef = useRef(
+		new Map<SelectionKey, CurrentSelection>(),
+	);
+	const addKeySeqRef = useRef(0);
+	const nextAddKey = useCallback(
+		(): SelectionKey => `add:${addKeySeqRef.current++}`,
+		[],
+	);
 
 	/**
-	 * 操作を待機台帳へ載せる。
+	 * その競合単位の現行の選択として `run` を走らせる（競合単位は SelectionKey を参照）。
 	 *
-	 * handler の呼び出しと同じ同期ブロックで呼ぶこと。解決してから載せると、
-	 * 載せる前の隙で呼ばれた uploads.wait がその操作を待ち漏らす
+	 * `run` に渡す `isCurrent` は「自分がまだ現行か」を返す。await を挟む handler は
+	 * フォームへ書く前にこれを確かめ、false なら結果を捨てる。false になるのは
+	 * 後着への交代・handleDelete・unmount のいずれか。
+	 *
+	 * 登録は `run` の呼び出しより前。逆順だと、その隙に呼ばれた uploads.wait が
+	 * 選択を待ち漏らす。`run` は必ず promise を返すこと。同期 throw されると
+	 * settle しない現行が残り、uploads.wait が返らなくなる
 	 */
-	const trackOperation = useCallback(
-		(key: string, operation: Promise<unknown>): void => {
+	const runAsCurrent = useCallback(
+		(
+			key: SelectionKey,
+			run: (isCurrent: () => boolean) => Promise<boolean>,
+		): Promise<boolean> => {
+			const selections = currentSelectionsRef.current;
+			// wait は現行のスナップショットを await するため、交代は明示的に伝える
+			selections.get(key)?.displace();
+
+			let displace = noop;
+			const settled = new Promise<void>((resolve) => {
+				displace = resolve;
+			});
+			const current: CurrentSelection = { settled, displace };
+			selections.set(key, current);
+
+			const applying = run(() => selections.get(key) === current);
 			// reject は待ち側へ伝播させない。adapter.setImages が同期 throw する実装では
 			// handler の promise が reject しうるが、待ち側の関心は終わったかどうかだけ
-			const settled = operation.then(noop, noop);
-			const operations = operationsRef.current;
-			operations.set(key, settled);
-			void settled.then(() => {
-				// 後着に置き換えられていたら消さない
-				if (operations.get(key) === settled) operations.delete(key);
+			void applying.then(noop, noop).then(() => {
+				displace();
+				// 既に後着へ交代していたら消さない
+				if (selections.get(key) === current) selections.delete(key);
 			});
+			return applying;
 		},
 		[],
 	);
 
 	const runAdd = useCallback(
-		async (file: File): Promise<boolean> => {
+		async (file: File, isCurrent: () => boolean): Promise<boolean> => {
 			if (!checkMaxImages()) return false;
 
 			const processedFile = await executeProcessFile(
@@ -513,6 +554,10 @@ export function useMultiImageCore(
 				msg.processFile,
 			);
 			if (!processedFile) return false;
+
+			// 追加が現行を降りるのは unmount のときだけ。凍結された adapter.images から
+			// 次の値を組んで書くと、再 mount 後に追加された項目を巻き戻す
+			if (!isCurrent()) return false;
 
 			// 非同期 await 中に並行 handleAdd が挿入を終えている
 			// 可能性があるため、挿入直前の状態で上限を再チェックする
@@ -534,16 +579,18 @@ export function useMultiImageCore(
 	);
 
 	const handleAdd = useCallback(
-		(file: File): Promise<boolean> => {
-			const operation = runAdd(file);
-			trackOperation(`add:${addOperationSeqRef.current++}`, operation);
-			return operation;
-		},
-		[runAdd, trackOperation],
+		(file: File): Promise<boolean> =>
+			// 追加は誰とも競合しないので、現行を降りるのは unmount のときだけになる
+			runAsCurrent(nextAddKey(), (isCurrent) => runAdd(file, isCurrent)),
+		[nextAddKey, runAdd, runAsCurrent],
 	);
 
 	const runFileChange = useCallback(
-		async (tempId: string, file: File): Promise<boolean> => {
+		async (
+			tempId: string,
+			file: File,
+			isCurrent: () => boolean,
+		): Promise<boolean> => {
 			const preIndex = getImageIndexByTempId(tempId);
 			if (preIndex === undefined) return false;
 
@@ -568,6 +615,11 @@ export function useMultiImageCore(
 				msg.processFile,
 			);
 			if (!processedFile) return false;
+
+			// 解決した順ではなく選んだ順で勝敗を決める（startUpload が転送側に持つのと
+			// 同じ規則）。handleDelete と unmount も現行を降ろすのでここで打ち切られる。
+			// 変換に失敗した選択はここへ来ない。捨てた選択でも onError は飛ぶ
+			if (!isCurrent()) return false;
 
 			// 非同期 await 中に並行操作で削除・移動されている可能性が
 			// あるため、await 前の index は使わず tempId から再解決する
@@ -601,11 +653,12 @@ export function useMultiImageCore(
 				selfDiscardsRef.current.delete(targetImage.tempId);
 				startUpload(targetImage.tempId, processedFile);
 			} else {
-				// await 中の handleDelete / replaceExisting で ToBeDeleted 化されたケース。
-				// markDelete は tempId を保持するため index 再解決では検出できずここに到達する。
-				// ユーザー操作の自然な競合であり handleDelete の no-op 方針と同様に
-				// エラー通知せず打ち切る（呼び出し時点で不正な status は
-				// handleFileChange 冒頭の preStatus チェックが onError 通知済み）
+				// handlers を介さない書き込み（form.reset や adapter.setImages への直接
+				// 書き込み）で await 中に ToBeDeleted 化されたケース。markDelete は tempId を
+				// 保持するため index 再解決では検出できずここに到達する。
+				// 差し替え先を失っただけなので、handleDelete が ToBeDeleted の再削除を
+				// no-op にするのと同じ方針でエラー通知せず打ち切る（呼び出し時点で不正な
+				// status は handleFileChange 冒頭の preStatus チェックが onError 通知済み）
 				return false;
 			}
 
@@ -623,12 +676,11 @@ export function useMultiImageCore(
 	);
 
 	const handleFileChange = useCallback(
-		(tempId: string, file: File): Promise<boolean> => {
-			const operation = runFileChange(tempId, file);
-			trackOperation(changeOperationKey(tempId), operation);
-			return operation;
-		},
-		[runFileChange, trackOperation],
+		(tempId: string, file: File): Promise<boolean> =>
+			runAsCurrent(fileChangeKey(tempId), (isCurrent) =>
+				runFileChange(tempId, file, isCurrent),
+			),
+		[runFileChange, runAsCurrent],
 	);
 
 	const handleDelete = useCallback(
@@ -659,10 +711,11 @@ export function useMultiImageCore(
 				return false;
 			}
 
-			// 削除後は走行中の差し替えが解決しても書き戻す先が無い（New は項目が消え、
-			// Existing は ToBeDeleted 分岐で打ち切られる）。待機台帳に残すと、
-			// uploads.wait が送信素材に関係しない操作を待つ
-			operationsRef.current.delete(changeOperationKey(tempId));
+			// 削除が勝つ。現行を降ろせば、走行中の差し替えは解決時に自分が現行でないと
+			// 分かって項目を復活させない。uploads.wait も無関係な選択を待たなくなる
+			const changeKey = fileChangeKey(tempId);
+			currentSelectionsRef.current.get(changeKey)?.displace();
+			currentSelectionsRef.current.delete(changeKey);
 
 			await safeValidate();
 			return true;
@@ -840,22 +893,22 @@ export function useMultiImageCore(
 
 	const wait = useCallback(async (): Promise<UploadWaitResult> => {
 		/**
-		 * 走行中の handler 操作を待つ。待ったら true を返す。
+		 * 走行中の選択を待つ。待ったら true を返す。
 		 *
-		 * 待ち終えた操作は待機台帳から落ちているので、残っていれば待機中に始まった
-		 * 操作。呼び出し側は true の間もう一度呼んでそれも待つ。
+		 * 待ち終えた選択は現行から降りているので、残っていれば待機中に始まった
+		 * 選択。呼び出し側は true の間もう一度呼んでそれも待つ。
 		 *
-		 * 周回数に上限は置かない。周回が続くのは新しい操作が始まったときだけで、
+		 * 周回数に上限は置かない。周回が続くのは新しい選択が始まったときだけで、
 		 * それは待つべき選択が増えたということ。上限で打ち切ると、まだ項目になって
 		 * いない選択を送信素材から落とすことになり、この待ち合わせの目的が消える。
 		 * 停止性は handler が返す promise が settle することに依存する。
 		 * processFile や adapter.validate が settle しない実装ではここで止まる
-		 * （UploadFileFn の doc が転送側に課しているのと同じ要求）
+		 * （ProcessFileFn / UploadFileFn の doc が課しているのと同じ要求）
 		 */
 		const settleOperations = async (): Promise<boolean> => {
-			const inflight = [...operationsRef.current.values()];
+			const inflight = [...currentSelectionsRef.current.values()];
 			if (inflight.length === 0) return false;
-			await Promise.all(inflight);
+			await Promise.all(inflight.map((op) => op.settled));
 			return true;
 		};
 
@@ -884,7 +937,7 @@ export function useMultiImageCore(
 		let stalledRounds = 0;
 
 		for (;;) {
-			// 操作 → 転送の順に待つ。操作が startUpload を終える前に収束ループへ入ると、
+			// 選択 → 転送の順に待つ。選択が startUpload を終える前に収束ループへ入ると、
 			// まだ始まっていない転送を待ち漏らす
 			if (await settleOperations()) continue;
 
@@ -1024,9 +1077,11 @@ export function useMultiImageCore(
 	// StrictMode の再 mount 後に転送が再開されなくなる
 	useEffect(() => {
 		return () => {
-			// 走行中の操作の結果は unmount で行き先を失う。待機台帳に残すと、
-			// 再 mount 後の uploads.wait が前の mount の操作を待つ
-			operationsRef.current.clear();
+			// 現行のまま残すと、再 mount 後の uploads.wait が前の mount の選択を待ち、
+			// 解決した選択が commit まで通る。adapter.images は unmount 時点で凍結される
+			// 一方 setImages は生きたフォームへ書くので、それは項目を巻き戻す
+			for (const op of currentSelectionsRef.current.values()) op.displace();
+			currentSelectionsRef.current.clear();
 			writeRecords((draft) => {
 				let changed = false;
 				for (const [tempId, rec] of draft) {
