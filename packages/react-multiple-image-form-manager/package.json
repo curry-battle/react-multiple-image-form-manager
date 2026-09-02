@@ -65,7 +65,7 @@
 	],
 	"scripts": {
 		"build": "tsdown && pnpm run verify:isolation",
-		"test": "vitest run",
+		"test": "vitest run --browser.headless",
 		"typecheck": "tsc --noEmit",
 		"verify:isolation": "node scripts/check-bundle-isolation.mjs"
 	},
