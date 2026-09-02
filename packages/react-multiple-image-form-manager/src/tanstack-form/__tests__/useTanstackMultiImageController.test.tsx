@@ -465,6 +465,31 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 		expect(handleRef.current?.raw.watchedImages).toHaveLength(1);
 	});
 
+	it("handleAdd: processFile を保留させた並行 add で 2 件とも残る", async () => {
+		const { processFile, resolveAll } = createDeferredProcessFile();
+		const handleRef: { current: Handle | null } = { current: null };
+
+		await render(
+			<RaceHarness processFile={processFile} handleRef={handleRef} />,
+		);
+
+		let first!: Promise<boolean>;
+		let second!: Promise<boolean>;
+		await act(async () => {
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			first = handleRef.current!.handleAdd(makeFile("a.jpg"));
+			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+			second = handleRef.current!.handleAdd(makeFile("b.jpg"));
+			resolveAll();
+		});
+
+		expect(await first).toBe(true);
+		expect(await second).toBe(true);
+		const images = handleRef.current?.raw.watchedImages ?? [];
+		expect(images).toHaveLength(2);
+		expect(images.map((i) => i.file?.name)).toEqual(["a.jpg", "b.jpg"]);
+	});
+
 	it("handleFileChange: processFile 中に別項目を削除しても対象を tempId で再解決する", async () => {
 		const { processFile, resolveAll } = createDeferredProcessFile();
 		const handleRef: { current: Handle | null } = { current: null };

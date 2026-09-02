@@ -80,6 +80,25 @@ describe("useMultiImageInputController (async race)", () => {
 		);
 	});
 
+	it("handleAdd: processFile を保留させた並行 add で 2 件とも残る", async () => {
+		const { processFile, resolveAll } = createDeferredProcessFile();
+		const { result } = await renderHook(() => useHarness({ processFile }));
+
+		let first!: Promise<boolean>;
+		let second!: Promise<boolean>;
+		await act(async () => {
+			first = result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
+			second = result.current.controller.handlers.handleAdd(makeFile("b.jpg"));
+			resolveAll();
+		});
+
+		expect(await first).toBe(true);
+		expect(await second).toBe(true);
+		const images = result.current.controller.raw.watchedImages;
+		expect(images).toHaveLength(2);
+		expect(images.map((i) => i.file?.name)).toEqual(["a.jpg", "b.jpg"]);
+	});
+
 	it("handleFileChange: processFile 中に別項目が削除されても対象を tempId で再解決する", async () => {
 		const { processFile, resolveAll } = createDeferredProcessFile();
 		const { result } = await renderHook(() => useHarness({ processFile }));

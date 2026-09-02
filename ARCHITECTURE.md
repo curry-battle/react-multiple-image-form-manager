@@ -105,8 +105,9 @@ in-flight の転送と台帳は失われるがフォーム state には項目が
 逆方向（台帳にあるのにフォーム state に無い）も同じ effect で回収する。`form.reset` など
 handlers を介さない差し替えで項目が消えると、その `failed` が `uploads.failed` に残り続け、
 消費側は `items` で引けず `retry` でも消せない。判定は「一度フォーム state で見た tempId」に
-限る。`ImageFieldAdapter` は `setImages` の同期反映を契約していないため、単に「今の images に
-無い」で消すと追加直後の転送を反映待ちの間に中断してしまう。
+限る。`setImages` の結果がフォーム state へ反映されるのはレンダーを跨いだあとなので
+（`ImageFieldAdapter` の doc を参照）、単に「今の images に無い」で消すと、追加直後の
+転送を反映待ちの間に中断してしまう。
 
 ### 選択の競合
 

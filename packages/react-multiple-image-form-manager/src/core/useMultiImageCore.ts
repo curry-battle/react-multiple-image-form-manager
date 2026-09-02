@@ -136,10 +136,10 @@ export type UseMultiImageCoreUploadedReturn = CoreBase & {
 /**
  * 転送の台帳。フォーム state には持たない（UploadState の doc を参照）。
  *
- * ImageFieldAdapter は setImages の反映が同期であることを契約していない。
- * 反映を次のレンダーまで遅らせる実装でも正しく動くよう、解決済み参照の判定は
- * フォーム state と本台帳をマージして行う。file を持つのは「その uploadRef が
- * どの File のものか」を後から検証するため。
+ * setImages の結果がフォーム state へ反映されるのはレンダーを跨いだあとになる
+ * （ImageFieldAdapter の doc を参照）。解決済み参照の判定をフォーム state と本台帳の
+ * マージで行うのはそのため。file を持つのは「その uploadRef がどの File のものか」を
+ * 後から検証するため。
  */
 type UploadRecord =
 	| {
@@ -747,10 +747,10 @@ export function useMultiImageCore(
 	/**
 	 * 転送済みの参照を返す。フォーム state を優先し、無ければ台帳で補う。
 	 *
-	 * ImageFieldAdapter は setImages の反映が同期であることを契約していないため、
-	 * 反映を次のレンダーまで遅らせる実装では書き戻し直後の adapter.images が
-	 * まだ uploadRef を持たない。台帳で補ってこの遅延を吸収する。台帳が消える
-	 * remount 後はフォーム state だけが判定材料になり、判定が縮退しても嘘をつかない。
+	 * 書き戻しがフォーム state へ伝播する前のレンダーでは、adapter.images がまだ
+	 * uploadRef を持たない（ImageFieldAdapter の doc を参照）。台帳で埋めるのはその隙間。
+	 * 台帳が消える remount 後はフォーム state だけが判定材料になり、判定が縮退しても
+	 * 嘘をつかない。
 	 *
 	 * items の表示用マージも uploads.wait の判定もこの 1 つの関数を通す。
 	 * 供給源が分かれると「items 上は見えるのに wait は失敗する」が起こる
@@ -1032,9 +1032,10 @@ export function useMultiImageCore(
 	// その項目の failed が uploads.failed に残り続け、消費側は items で引けず
 	// retry でも消せない状態になる。
 	//
-	// 「一度フォーム state で見た tempId」だけを対象にする。ImageFieldAdapter は
-	// setImages の同期反映を契約していないので、単に「今の images に無い」で判定すると
-	// 追加直後の転送を反映待ちの間に中断してしまう
+	// 「一度フォーム state で見た tempId」だけを対象にする。setImages の結果が
+	// フォーム state へ反映されるのはレンダーを跨いだあとなので（ImageFieldAdapter の
+	// doc を参照）、単に「今の images に無い」で判定すると、追加直後の転送を
+	// 反映待ちの間に中断してしまう
 	const seenTempIdsRef = useRef(new Set<string>());
 	const pruneOrphans = useCallback(() => {
 		const alive = new Set(adapterRef.current.images.map((img) => img.tempId));
