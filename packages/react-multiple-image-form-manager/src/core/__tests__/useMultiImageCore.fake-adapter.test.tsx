@@ -410,6 +410,34 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			expect(result.current.raw.watchedImages).toHaveLength(1);
 		});
 
+		it("[stale] handleAdd を解決前に2回発火しても2件とも残る", async () => {
+			const d1 = createDeferred<File>();
+			const d2 = createDeferred<File>();
+			const deferreds = [d1, d2];
+			let call = 0;
+			const processFile = vi.fn(async (_f: File) => deferreds[call++].promise);
+
+			const { result } = await renderCore([], { processFile });
+
+			const fileA = new File(["a"], "a.jpg", { type: "image/jpeg" });
+			const fileB = new File(["b"], "b.jpg", { type: "image/jpeg" });
+
+			let ok1 = false;
+			let ok2 = false;
+			await act(async () => {
+				const p1 = result.current.handlers.handleAdd(fileA);
+				const p2 = result.current.handlers.handleAdd(fileB);
+				d1.resolve(fileA);
+				d2.resolve(fileB);
+				[ok1, ok2] = await Promise.all([p1, p2]);
+			});
+
+			expect([ok1, ok2]).toEqual([true, true]);
+			expect(result.current.raw.watchedImages.map((i) => i.file?.name)).toEqual(
+				["a.jpg", "b.jpg"],
+			);
+		});
+
 		it("[stale] handleFileChange の解決前に別項目を削除しても対象画像のみ差し替わる", async () => {
 			const d = createDeferred<File>();
 			const processFile = vi.fn(async (_f: File) => d.promise);
