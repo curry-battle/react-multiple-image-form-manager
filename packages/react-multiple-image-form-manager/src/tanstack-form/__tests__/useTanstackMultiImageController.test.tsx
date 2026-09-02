@@ -1,6 +1,5 @@
 import { useForm } from "@tanstack/react-form";
 import type { ReactNode } from "react";
-import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { z } from "zod";
@@ -115,9 +114,7 @@ describe("TanstackMultiImageController (integration)", () => {
 
 		expect(handleRef.current?.items).toHaveLength(0);
 
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
 
 		expect(handleRef.current?.items).toHaveLength(1);
 		expect(handleRef.current?.items[0]?.image.status).toBe(ImageFormStatus.New);
@@ -135,9 +132,8 @@ describe("TanstackMultiImageController (integration)", () => {
 			/>,
 		);
 		expect(handleRef.current?.items).toHaveLength(2);
-		await act(async () => {
-			await handleRef.current?.handleDelete("temp_a");
-		});
+		await handleRef.current?.handleDelete("temp_a");
+
 		// items filters out ToBeDeleted, so only 1 visible
 		expect(handleRef.current?.items).toHaveLength(1);
 		// raw still has both (existing + tobedeleted)
@@ -154,9 +150,8 @@ describe("TanstackMultiImageController (integration)", () => {
 			<HarnessHost initialImages={[newImg]} handleRef={handleRef} />,
 		);
 		expect(handleRef.current?.items).toHaveLength(1);
-		await act(async () => {
-			await handleRef.current?.handleDelete("temp_n");
-		});
+		await handleRef.current?.handleDelete("temp_n");
+
 		expect(handleRef.current?.items).toHaveLength(0);
 		expect(handleRef.current?.raw.watchedImages).toHaveLength(0);
 	});
@@ -164,28 +159,24 @@ describe("TanstackMultiImageController (integration)", () => {
 	it("handleMove: swaps adjacent items (down)", async () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<HarnessHost handleRef={handleRef} />);
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-			await handleRef.current?.handleAdd(makeFile("b.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
+		await handleRef.current?.handleAdd(makeFile("b.jpg"));
+
 		const firstTempId = handleRef.current?.raw.watchedImages[0]?.tempId ?? "";
-		await act(async () => {
-			await handleRef.current?.handleMove(firstTempId, "down");
-		});
+		await handleRef.current?.handleMove(firstTempId, "down");
+
 		expect(handleRef.current?.raw.watchedImages[1]?.tempId).toBe(firstTempId);
 	});
 
 	it("handleMove: swaps adjacent items (up)", async () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<HarnessHost handleRef={handleRef} />);
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-			await handleRef.current?.handleAdd(makeFile("b.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
+		await handleRef.current?.handleAdd(makeFile("b.jpg"));
+
 		const secondTempId = handleRef.current?.raw.watchedImages[1]?.tempId ?? "";
-		await act(async () => {
-			await handleRef.current?.handleMove(secondTempId, "up");
-		});
+		await handleRef.current?.handleMove(secondTempId, "up");
+
 		expect(handleRef.current?.raw.watchedImages[0]?.tempId).toBe(secondTempId);
 	});
 
@@ -197,9 +188,8 @@ describe("TanstackMultiImageController (integration)", () => {
 				handleRef={handleRef}
 			/>,
 		);
-		await act(async () => {
-			await handleRef.current?.handleFileChange("temp_a", makeFile("new.jpg"));
-		});
+		await handleRef.current?.handleFileChange("temp_a", makeFile("new.jpg"));
+
 		const imgs = handleRef.current?.raw.watchedImages ?? [];
 		expect(imgs.map((i) => i.status)).toEqual([
 			ImageFormStatus.New,
@@ -212,13 +202,11 @@ describe("TanstackMultiImageController (integration)", () => {
 	it("handleFileChange: replaces a new image file in-place", async () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<HarnessHost handleRef={handleRef} />);
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
+
 		const tempId = handleRef.current?.raw.watchedImages[0]?.tempId ?? "";
-		await act(async () => {
-			await handleRef.current?.handleFileChange(tempId, makeFile("b.jpg"));
-		});
+		await handleRef.current?.handleFileChange(tempId, makeFile("b.jpg"));
+
 		const imgs = handleRef.current?.raw.watchedImages ?? [];
 		expect(imgs).toHaveLength(1);
 		expect(imgs[0].status).toBe(ImageFormStatus.New);
@@ -237,9 +225,8 @@ describe("TanstackMultiImageController (integration)", () => {
 			/>,
 		);
 		let ok = true;
-		await act(async () => {
-			ok = (await handleRef.current?.handleAdd(makeFile("b.jpg"))) ?? true;
-		});
+		ok = (await handleRef.current?.handleAdd(makeFile("b.jpg"))) ?? true;
+
 		expect(ok).toBe(false);
 		expect(onError).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "max_images" }),
@@ -262,9 +249,7 @@ describe("TanstackMultiImageController (integration)", () => {
 			/>,
 		);
 
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("b.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("b.jpg"));
 
 		expect(onError).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -279,12 +264,10 @@ describe("TanstackMultiImageController (integration)", () => {
 
 		await render(<HarnessHost withSchema handleRef={handleRef} />);
 
-		await act(async () => {
-			// image/png is not in acceptedTypes → schema rejects
-			await handleRef.current?.handleAdd(
-				new File(["v"], "bad.png", { type: "image/png" }),
-			);
-		});
+		// image/png is not in acceptedTypes → schema rejects
+		await handleRef.current?.handleAdd(
+			new File(["v"], "bad.png", { type: "image/png" }),
+		);
 
 		const item = handleRef.current?.items[0];
 		expect(item).toBeDefined();
@@ -305,10 +288,8 @@ describe("TanstackMultiImageController (integration)", () => {
 			/>,
 		);
 		let ok = false;
-		await act(async () => {
-			ok =
-				(await handleRef.current?.handleAdd(makeFile("second.jpg"))) ?? false;
-		});
+		ok = (await handleRef.current?.handleAdd(makeFile("second.jpg"))) ?? false;
+
 		expect(ok).toBe(true);
 		const rootErrors = handleRef.current?.rootErrors ?? [];
 		expect(rootErrors.length).toBeGreaterThan(0);
@@ -353,25 +334,22 @@ describe("TanstackMultiImageController (external reset parity)", () => {
 
 		await render(<ResetHarness />);
 
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
+
 		expect(handleRef.current?.raw.watchedImages).toHaveLength(1);
 
-		await act(async () => {
-			formRef.current.reset({
-				images: [
-					makeExistingImage("temp_reset_a", "id-reset-a"),
-					makeExistingImage("temp_reset_b", "id-reset-b"),
-				],
-			});
+		formRef.current.reset({
+			images: [
+				makeExistingImage("temp_reset_a", "id-reset-a"),
+				makeExistingImage("temp_reset_b", "id-reset-b"),
+			],
 		});
 
-		expect(handleRef.current?.raw.watchedImages).toHaveLength(2);
+		await vi.waitFor(() =>
+			expect(handleRef.current?.raw.watchedImages).toHaveLength(2),
+		);
 
-		await act(async () => {
-			await handleRef.current?.handleDelete("temp_reset_a");
-		});
+		await handleRef.current?.handleDelete("temp_reset_a");
 
 		const imgs = handleRef.current?.raw.watchedImages ?? [];
 		expect(imgs).toHaveLength(2);
@@ -450,15 +428,11 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 			/>,
 		);
 
-		let first!: Promise<boolean>;
-		let second!: Promise<boolean>;
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			first = handleRef.current!.handleAdd(makeFile("a.jpg"));
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			second = handleRef.current!.handleAdd(makeFile("b.jpg"));
-			resolveAll();
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const first = handleRef.current!.handleAdd(makeFile("a.jpg"));
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const second = handleRef.current!.handleAdd(makeFile("b.jpg"));
+		resolveAll();
 
 		expect(await first).toBe(true);
 		expect(await second).toBe(false);
@@ -473,15 +447,11 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 			<RaceHarness processFile={processFile} handleRef={handleRef} />,
 		);
 
-		let first!: Promise<boolean>;
-		let second!: Promise<boolean>;
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			first = handleRef.current!.handleAdd(makeFile("a.jpg"));
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			second = handleRef.current!.handleAdd(makeFile("b.jpg"));
-			resolveAll();
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const first = handleRef.current!.handleAdd(makeFile("a.jpg"));
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const second = handleRef.current!.handleAdd(makeFile("b.jpg"));
+		resolveAll();
 
 		expect(await first).toBe(true);
 		expect(await second).toBe(true);
@@ -498,29 +468,24 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 			<RaceHarness processFile={processFile} handleRef={handleRef} />,
 		);
 
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			const add1 = handleRef.current!.handleAdd(makeFile("a.jpg"));
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			const add2 = handleRef.current!.handleAdd(makeFile("b.jpg"));
-			resolveAll();
-			await Promise.all([add1, add2]);
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const add1 = handleRef.current!.handleAdd(makeFile("a.jpg"));
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const add2 = handleRef.current!.handleAdd(makeFile("b.jpg"));
+		resolveAll();
+		await Promise.all([add1, add2]);
 
 		const [a, b] = (handleRef.current?.raw.watchedImages ?? []).map(
 			(i) => i.tempId,
 		);
 
-		let changeResult!: Promise<boolean>;
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			changeResult = handleRef.current!.handleFileChange(
-				b,
-				makeFile("replaced.jpg"),
-			);
-			await handleRef.current?.handleDelete(a);
-			resolveAll();
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const changeResult = handleRef.current!.handleFileChange(
+			b,
+			makeFile("replaced.jpg"),
+		);
+		await handleRef.current?.handleDelete(a);
+		resolveAll();
 
 		expect(await changeResult).toBe(true);
 		const imgs = handleRef.current?.raw.watchedImages ?? [];
@@ -536,24 +501,22 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 			<RaceHarness processFile={processFile} handleRef={handleRef} />,
 		);
 
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			const add = handleRef.current!.handleAdd(makeFile("a.jpg"));
-			resolveAll();
-			await add;
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const add = handleRef.current!.handleAdd(makeFile("a.jpg"));
+		resolveAll();
+		await add;
+
 		const a = handleRef.current?.raw.watchedImages[0].tempId ?? "";
 
-		let first!: Promise<boolean>;
-		let second!: Promise<boolean>;
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			first = handleRef.current!.handleFileChange(a, makeFile("file1.jpg"));
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			second = handleRef.current!.handleFileChange(a, makeFile("file2.jpg"));
-			// resolveAll は登録順に解決するので、先着が先に解決する
-			resolveAll();
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const first = handleRef.current!.handleFileChange(a, makeFile("file1.jpg"));
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const second = handleRef.current!.handleFileChange(
+			a,
+			makeFile("file2.jpg"),
+		);
+		// resolveAll は登録順に解決するので、先着が先に解決する
+		resolveAll();
 
 		expect(await first).toBe(false);
 		expect(await second).toBe(true);
@@ -570,24 +533,20 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 			<RaceHarness processFile={processFile} handleRef={handleRef} />,
 		);
 
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			const add = handleRef.current!.handleAdd(makeFile("a.jpg"));
-			resolveAll();
-			await add;
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const add = handleRef.current!.handleAdd(makeFile("a.jpg"));
+		resolveAll();
+		await add;
+
 		const a = handleRef.current?.raw.watchedImages[0].tempId ?? "";
 
-		let changeResult!: Promise<boolean>;
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			changeResult = handleRef.current!.handleFileChange(
-				a,
-				makeFile("replaced.jpg"),
-			);
-			await handleRef.current?.handleDelete(a);
-			resolveAll();
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const changeResult = handleRef.current!.handleFileChange(
+			a,
+			makeFile("replaced.jpg"),
+		);
+		await handleRef.current?.handleDelete(a);
+		resolveAll();
 
 		expect(await changeResult).toBe(false);
 		expect(handleRef.current?.raw.watchedImages).toHaveLength(0);
@@ -607,16 +566,13 @@ describe("TanstackMultiImageController (stale snapshot race parity)", () => {
 			/>,
 		);
 
-		let changeResult!: Promise<boolean>;
-		await act(async () => {
-			// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
-			changeResult = handleRef.current!.handleFileChange(
-				"temp_a",
-				makeFile("replaced.jpg"),
-			);
-			await handleRef.current?.handleDelete("temp_a");
-			resolveAll();
-		});
+		// biome-ignore lint/style/noNonNullAssertion: render completed above; handleRef.current is guaranteed non-null
+		const changeResult = handleRef.current!.handleFileChange(
+			"temp_a",
+			makeFile("replaced.jpg"),
+		);
+		await handleRef.current?.handleDelete("temp_a");
+		resolveAll();
 
 		expect(await changeResult).toBe(false);
 		const imgs = handleRef.current?.raw.watchedImages ?? [];
@@ -641,12 +597,9 @@ describe("TanstackMultiImageController (unsupported status parity)", () => {
 			/>,
 		);
 
-		await act(async () => {
-			await handleRef.current?.handleDelete("temp_a");
-		});
-		await act(async () => {
-			await handleRef.current?.handleFileChange("temp_a", makeFile("x.jpg"));
-		});
+		await handleRef.current?.handleDelete("temp_a");
+
+		await handleRef.current?.handleFileChange("temp_a", makeFile("x.jpg"));
 
 		expect(onError).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -720,20 +673,18 @@ describe("TanstackMultiImageController (uploads.wait と走行中の handler 操
 		);
 
 		let waitResult: unknown = null;
-		await act(async () => {
-			// 変換中に保存を押す状況。handleAdd は await しない
-			void readHandle(handleRef).handleAdd(makeFile("a.jpg"));
-			const waiting = readHandle(handleRef)
-				.uploads.wait()
-				.then((r) => {
-					waitResult = r;
-				});
-			await flush();
-			expect(waitResult).toBeNull();
+		// 変換中に保存を押す状況。handleAdd は await しない
+		void readHandle(handleRef).handleAdd(makeFile("a.jpg"));
+		const waiting = readHandle(handleRef)
+			.uploads.wait()
+			.then((r) => {
+				waitResult = r;
+			});
+		await flush();
+		expect(waitResult).toBeNull();
 
-			converted.resolve(webp());
-			await waiting;
-		});
+		converted.resolve(webp());
+		await waiting;
 
 		expect(waitResult).toMatchObject({ ok: true, images: [{ uploadRef }] });
 	});
@@ -750,19 +701,17 @@ describe("TanstackMultiImageController (uploads.wait と走行中の handler 操
 		);
 
 		let waitResult: unknown = null;
-		await act(async () => {
-			void readHandle(handleRef).handleAdd(makeFile("a.jpg"));
-			const waiting = readHandle(handleRef)
-				.uploads.wait()
-				.then((r) => {
-					waitResult = r;
-				});
-			await flush();
-			expect(waitResult).toBeNull();
+		void readHandle(handleRef).handleAdd(makeFile("a.jpg"));
+		const waiting = readHandle(handleRef)
+			.uploads.wait()
+			.then((r) => {
+				waitResult = r;
+			});
+		await flush();
+		expect(waitResult).toBeNull();
 
-			converted.resolve(webp());
-			await waiting;
-		});
+		converted.resolve(webp());
+		await waiting;
 
 		expect(waitResult).toMatchObject({
 			ok: true,

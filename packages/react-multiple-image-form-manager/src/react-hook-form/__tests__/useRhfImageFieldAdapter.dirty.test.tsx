@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { act } from "react";
 import { type UseFormReturn, useForm } from "react-hook-form";
 import { describe, expect, it } from "vitest";
 import { renderHook } from "vitest-browser-react";
@@ -33,7 +32,7 @@ async function renderDirtyHarness(defaultImages: Image[] = []) {
 		return <>{children}</>;
 	};
 
-	const { result } = await renderHook(
+	const { result, act } = await renderHook(
 		() => {
 			const form = formRef.current;
 			if (!form) throw new Error("form not initialized");
@@ -45,12 +44,12 @@ async function renderDirtyHarness(defaultImages: Image[] = []) {
 		{ wrapper },
 	);
 
-	return { result, getIsDirty: () => isDirty };
+	return { result, act, getIsDirty: () => isDirty };
 }
 
 describe("useRhfImageFieldAdapter dirty 伝播", () => {
 	it("handleDelete（既存画像削除）で isDirty が true になる", async () => {
-		const { result, getIsDirty } = await renderDirtyHarness([
+		const { result, act, getIsDirty } = await renderDirtyHarness([
 			makeExisting("temp_ex", "id-existing"),
 		]);
 		expect(getIsDirty()).toBe(false);
@@ -63,7 +62,7 @@ describe("useRhfImageFieldAdapter dirty 伝播", () => {
 	});
 
 	it("handleAdd で isDirty が true になる", async () => {
-		const { result, getIsDirty } = await renderDirtyHarness();
+		const { result, act, getIsDirty } = await renderDirtyHarness();
 		expect(getIsDirty()).toBe(false);
 
 		await act(async () => {
@@ -76,7 +75,7 @@ describe("useRhfImageFieldAdapter dirty 伝播", () => {
 	});
 
 	it("handleFileChange（既存画像のファイル差し替え）で isDirty が true になる", async () => {
-		const { result, getIsDirty } = await renderDirtyHarness([
+		const { result, act, getIsDirty } = await renderDirtyHarness([
 			makeExisting("temp_ex", "id-existing"),
 		]);
 		expect(getIsDirty()).toBe(false);
@@ -92,7 +91,7 @@ describe("useRhfImageFieldAdapter dirty 伝播", () => {
 	});
 
 	it("handleMove で isDirty が true になる", async () => {
-		const { result, getIsDirty } = await renderDirtyHarness([
+		const { result, act, getIsDirty } = await renderDirtyHarness([
 			makeExisting("temp_a", "id-a"),
 			makeExisting("temp_b", "id-b"),
 		]);

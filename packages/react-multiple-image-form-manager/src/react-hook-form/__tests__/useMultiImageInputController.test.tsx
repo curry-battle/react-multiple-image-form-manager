@@ -1,5 +1,4 @@
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema";
-import { act } from "react";
 import type { Resolver } from "react-hook-form";
 import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "vitest-browser-react";
@@ -12,7 +11,7 @@ import { makeExisting, makeFile, useHarness } from "./harness";
 describe("useMultiImageInputController (constraints)", () => {
 	it("constraints.maxImages=1 → 2nd add is rejected with onError(max_images)", async () => {
 		const onError = vi.fn();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				constraints: { acceptedTypes: ["image/jpeg"], maxImages: 1 },
 				onError,
@@ -56,7 +55,7 @@ describe("useMultiImageInputController (async race)", () => {
 	it("handleAdd: processFile 中の並行 add で maxImages を突破しない", async () => {
 		const onError = vi.fn();
 		const { processFile, resolveAll } = createDeferredProcessFile();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				constraints: { acceptedTypes: ["image/jpeg"], maxImages: 1 },
 				onError,
@@ -82,7 +81,7 @@ describe("useMultiImageInputController (async race)", () => {
 
 	it("handleAdd: processFile を保留させた並行 add で 2 件とも残る", async () => {
 		const { processFile, resolveAll } = createDeferredProcessFile();
-		const { result } = await renderHook(() => useHarness({ processFile }));
+		const { result, act } = await renderHook(() => useHarness({ processFile }));
 
 		let first!: Promise<boolean>;
 		let second!: Promise<boolean>;
@@ -101,7 +100,7 @@ describe("useMultiImageInputController (async race)", () => {
 
 	it("handleFileChange: processFile 中に別項目が削除されても対象を tempId で再解決する", async () => {
 		const { processFile, resolveAll } = createDeferredProcessFile();
-		const { result } = await renderHook(() => useHarness({ processFile }));
+		const { result, act } = await renderHook(() => useHarness({ processFile }));
 
 		await act(async () => {
 			const add1 = result.current.controller.handlers.handleAdd(
@@ -136,7 +135,7 @@ describe("useMultiImageInputController (async race)", () => {
 
 	it("handleFileChange: processFile 中に対象自身が削除されたら false を返し何もしない", async () => {
 		const { processFile, resolveAll } = createDeferredProcessFile();
-		const { result } = await renderHook(() => useHarness({ processFile }));
+		const { result, act } = await renderHook(() => useHarness({ processFile }));
 
 		await act(async () => {
 			const add = result.current.controller.handlers.handleAdd(
@@ -164,7 +163,7 @@ describe("useMultiImageInputController (async race)", () => {
 	it("handleFileChange: processFile 中に対象の Existing が削除されたら onError なしで false を返す", async () => {
 		const onError = vi.fn();
 		const { processFile, resolveAll } = createDeferredProcessFile();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				onError,
 				processFile,
@@ -191,7 +190,7 @@ describe("useMultiImageInputController (async race)", () => {
 
 describe("useMultiImageInputController (characterization)", () => {
 	it("handleAdd: New が末尾に追加される", async () => {
-		const { result } = await renderHook(() => useHarness());
+		const { result, act } = await renderHook(() => useHarness());
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile());
 		});
@@ -200,7 +199,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleAdd: ToBeDeleted があっても末尾に追加される", async () => {
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({ defaultImages: [makeExisting("temp_a", "id-a")] }),
 		);
 		await act(async () => {
@@ -216,7 +215,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleFileChange(Existing): 元位置に New を挿入し、旧項目を末尾に追加", async () => {
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({ defaultImages: [makeExisting("temp_a", "id-a")] }),
 		);
 		await act(async () => {
@@ -231,7 +230,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleFileChange(Existing): 複数要素の中間位置で replace が正しく動作する", async () => {
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				defaultImages: [
 					makeExisting("temp_a", "id-a"),
@@ -258,7 +257,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleFileChange(New): file を差し替え、配列長は不変", async () => {
-		const { result } = await renderHook(() => useHarness());
+		const { result, act } = await renderHook(() => useHarness());
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
 		});
@@ -276,7 +275,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleDelete(Existing): in-place で ToBeDeleted 化する", async () => {
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				defaultImages: [
 					makeExisting("temp_a", "id-a"),
@@ -293,7 +292,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleMove(tempId, 'down'): 対象を可視順で1つ後ろへ", async () => {
-		const { result } = await renderHook(() => useHarness());
+		const { result, act } = await renderHook(() => useHarness());
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
 			await result.current.controller.handlers.handleAdd(makeFile("b.jpg"));
@@ -306,7 +305,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleMove(tempId, 'up'): 対象を可視順で1つ前へ", async () => {
-		const { result } = await renderHook(() => useHarness());
+		const { result, act } = await renderHook(() => useHarness());
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
 			await result.current.controller.handlers.handleAdd(makeFile("b.jpg"));
@@ -319,7 +318,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleMove: 先頭の up は何もしない", async () => {
-		const { result } = await renderHook(() => useHarness());
+		const { result, act } = await renderHook(() => useHarness());
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
 			await result.current.controller.handlers.handleAdd(makeFile("b.jpg"));
@@ -332,7 +331,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleMove: 末尾可視の down は何もしない", async () => {
-		const { result } = await renderHook(() => useHarness());
+		const { result, act } = await renderHook(() => useHarness());
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
 			await result.current.controller.handlers.handleAdd(makeFile("b.jpg"));
@@ -345,7 +344,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleMove: ToBeDeleted をスキップして可視アイテム間でのみ動く", async () => {
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				defaultImages: [
 					makeExisting("temp_a", "id-a"),
@@ -366,7 +365,7 @@ describe("useMultiImageInputController (characterization)", () => {
 	});
 
 	it("handleMove: ToBeDeleted 項目自体の移動は no-op", async () => {
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				defaultImages: [
 					makeExisting("temp_a", "id-a"),
@@ -393,7 +392,7 @@ describe("useMultiImageInputController (onError / i18n)", () => {
 		const processFile = vi.fn(async () => {
 			throw new Error("boom");
 		});
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({ onError, processFile }),
 		);
 		await act(async () => {
@@ -409,7 +408,7 @@ describe("useMultiImageInputController (onError / i18n)", () => {
 
 	it("maxImages exceeded: onError has type=max_images with message", async () => {
 		const onError = vi.fn();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				onError,
 				constraints: { acceptedTypes: ["image/jpeg"], maxImages: 0 },
@@ -429,7 +428,7 @@ describe("useMultiImageInputController (onError / i18n)", () => {
 	it("handleFileChange on unsupported status: notifies via onError instead of console.warn", async () => {
 		const warn = vi.spyOn(console, "warn");
 		const onError = vi.fn();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				onError,
 				defaultImages: [makeExisting("temp_a", "id-a")],
@@ -470,7 +469,7 @@ function createCapturingResolver() {
 describe("useMultiImageInputController (trigger validates current state)", () => {
 	it("handleAdd: resolver receives the array WITH the new image", async () => {
 		const { resolver, captured } = createCapturingResolver();
-		const { result } = await renderHook(() => useHarness({ resolver }));
+		const { result, act } = await renderHook(() => useHarness({ resolver }));
 
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
@@ -483,7 +482,7 @@ describe("useMultiImageInputController (trigger validates current state)", () =>
 
 	it("handleDelete: resolver receives the array WITH the deletion applied", async () => {
 		const { resolver, captured } = createCapturingResolver();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				resolver,
 				defaultImages: [
@@ -507,7 +506,7 @@ describe("useMultiImageInputController (trigger validates current state)", () =>
 
 	it("handleMove: resolver receives the array WITH the move applied", async () => {
 		const { resolver, captured } = createCapturingResolver();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				resolver,
 				defaultImages: [
@@ -528,7 +527,7 @@ describe("useMultiImageInputController (trigger validates current state)", () =>
 
 describe("useMultiImageInputController (external reset)", () => {
 	it("form.reset() propagates to hook and subsequent operations work on reset values", async () => {
-		const { result } = await renderHook(() => useHarness());
+		const { result, act } = await renderHook(() => useHarness());
 
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
@@ -573,7 +572,7 @@ function createZodResolver() {
 describe("useMultiImageInputController (real schema errors via zod)", () => {
 	it("invalid file type → per-item file error in items", async () => {
 		const resolver = createZodResolver();
-		const { result } = await renderHook(() => useHarness({ resolver }));
+		const { result, act } = await renderHook(() => useHarness({ resolver }));
 
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(
@@ -589,7 +588,7 @@ describe("useMultiImageInputController (real schema errors via zod)", () => {
 
 	it("maxImages exceeded → rootErrors populated", async () => {
 		const resolver = createZodResolver();
-		const { result } = await renderHook(() => useHarness({ resolver }));
+		const { result, act } = await renderHook(() => useHarness({ resolver }));
 
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
@@ -608,7 +607,7 @@ describe("useMultiImageInputController (real schema errors via zod)", () => {
 
 	it("valid images → no errors", async () => {
 		const resolver = createZodResolver();
-		const { result } = await renderHook(() => useHarness({ resolver }));
+		const { result, act } = await renderHook(() => useHarness({ resolver }));
 
 		await act(async () => {
 			await result.current.controller.handlers.handleAdd(makeFile("a.jpg"));
@@ -635,7 +634,7 @@ describe("useMultiImageInputController (uploads.wait と走行中の handler 操
 
 	it("変換の解決前に settle せず、解決後に当該画像を含む ok を返すこと", async () => {
 		const converted = createDeferred<File>();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({
 				processFile: () => converted.promise,
 				uploadFile: async () => ({ uploadRef }),
@@ -661,7 +660,7 @@ describe("useMultiImageInputController (uploads.wait と走行中の handler 操
 
 	it("uploadFile 未設定の構成でも変換を待つこと", async () => {
 		const converted = createDeferred<File>();
-		const { result } = await renderHook(() =>
+		const { result, act } = await renderHook(() =>
 			useHarness({ processFile: () => converted.promise }),
 		);
 
