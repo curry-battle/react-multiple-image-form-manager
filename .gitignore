@@ -30,6 +30,9 @@ yarn.lock
 **/playwright-report/
 **/test-results/
 
+# Vitest Browser Mode（テスト失敗時のスクリーンショット）
+**/__screenshots__/
+
 # Environment variables
 .env*
 !.env.example
