@@ -1,4 +1,3 @@
-import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "vitest-browser-react";
 import { setupBrowserMocks } from "../../__testutils__/browserMocks";
@@ -76,7 +75,7 @@ describe("useImagePreviewUrl", () => {
 	it("同一 file の再レンダーでは URL を再生成しない", async () => {
 		const { createObjectURL } = setupBrowserMocks();
 		const image = makeNew();
-		const { result, rerender } = await renderHook(() =>
+		const { result, rerender, act } = await renderHook(() =>
 			useImagePreviewUrl(image),
 		);
 

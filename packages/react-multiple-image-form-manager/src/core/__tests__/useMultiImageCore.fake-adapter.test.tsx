@@ -1,5 +1,5 @@
 import type React from "react";
-import { act, StrictMode, useRef, useState } from "react";
+import { StrictMode, useRef, useState } from "react";
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { renderHook } from "vitest-browser-react";
 import type { ImageFieldAdapter } from "../ImageFieldAdapter";
@@ -128,7 +128,7 @@ async function renderCore(
 		validate?: ReturnType<typeof vi.fn>;
 	} = {};
 	let renderCount = 0;
-	const { result, unmount, rerender } = await renderHook(
+	const { result, act, unmount, rerender } = await renderHook(
 		() => {
 			renderCount++;
 			const { adapter, validate } = useFakeAdapter(
@@ -154,7 +154,14 @@ async function renderCore(
 	);
 	// options は参照で閉じ込めてあるので、書き換えてから rerender すれば
 	// パラメータ変更を再現できる
-	return { result, ref, unmount, rerender, getRenderCount: () => renderCount };
+	return {
+		result,
+		act,
+		ref,
+		unmount,
+		rerender,
+		getRenderCount: () => renderCount,
+	};
 }
 
 // --- Tests ---
@@ -166,7 +173,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 	describe("handleAdd", () => {
 		it("空配列に追加できること", async () => {
-			const { result } = await renderCore();
+			const { result, act } = await renderCore();
 			const file = new File(["d"], "a.jpg", { type: "image/jpeg" });
 			let ok = false;
 			await act(async () => {
@@ -181,7 +188,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("maxImages に達すると false を返し onError を呼ぶこと", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewImage()], {
+			const { result, act } = await renderCore([makeNewImage()], {
 				maxImages: 1,
 				onError,
 			});
@@ -199,7 +206,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("既存配列の末尾に追加されること", async () => {
 			const visible = makeNewImage();
-			const { result } = await renderCore([visible]);
+			const { result, act } = await renderCore([visible]);
 			await act(async () => {
 				await result.current.handlers.handleAdd(
 					new File(["d"], "c.jpg", { type: "image/jpeg" }),
@@ -214,7 +221,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("processFile が呼ばれること、失敗時は onError + false", async () => {
 			const onError = vi.fn();
 			const processFile = vi.fn(async (f: File) => f);
-			const { result } = await renderCore([], { processFile, onError });
+			const { result, act } = await renderCore([], { processFile, onError });
 			await act(async () => {
 				await result.current.handlers.handleAdd(
 					new File(["d"], "p.jpg", { type: "image/jpeg" }),
@@ -242,7 +249,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 
 		it("追加後に adapter.validate が呼ばれること", async () => {
-			const { result, ref } = await renderCore();
+			const { result, ref, act } = await renderCore();
 			await act(async () => {
 				await result.current.handlers.handleAdd(
 					new File(["d"], "x.jpg", { type: "image/jpeg" }),
@@ -253,7 +260,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("maxImages到達 → 削除 → 追加成功（枠解放）", async () => {
 			const ex = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { maxImages: 1 });
+			const { result, act } = await renderCore([ex], { maxImages: 1 });
 
 			let ok = true;
 			await act(async () => {
@@ -279,7 +286,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 	describe("handleFileChange", () => {
 		it("Existing → 元位置に New、末尾に ToBeDeleted", async () => {
 			const ex = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex]);
+			const { result, act } = await renderCore([ex]);
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
 					"temp_ex",
@@ -294,7 +301,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("New → file 差し替え、配列長は不変", async () => {
 			const nv = makeNewImage({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
 					"temp_n",
@@ -312,7 +319,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("Existing → in-place で ToBeDeleted 化", async () => {
 			const ex = makeExistingImage({ tempId: "temp_ex" });
 			const visible = makeNewImage({ tempId: "temp_n" });
-			const { result } = await renderCore([ex, visible]);
+			const { result, act } = await renderCore([ex, visible]);
 			await act(async () => {
 				await result.current.handlers.handleDelete("temp_ex");
 			});
@@ -324,7 +331,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("New → 配列から除去", async () => {
 			const nv = makeNewImage({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			await act(async () => {
 				await result.current.handlers.handleDelete("temp_n");
 			});
@@ -336,7 +343,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("先頭から上には移動できない", async () => {
 			const a = makeNewImage({ tempId: "a" });
 			const b = makeNewImage({ tempId: "b" });
-			const { result } = await renderCore([a, b]);
+			const { result, act } = await renderCore([a, b]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.handleMove("a", "up");
@@ -347,7 +354,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("末尾から下には移動できない", async () => {
 			const a = makeNewImage({ tempId: "a" });
 			const b = makeNewImage({ tempId: "b" });
-			const { result } = await renderCore([a, b]);
+			const { result, act } = await renderCore([a, b]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.handleMove("b", "down");
@@ -358,7 +365,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("中間要素を移動できる", async () => {
 			const a = makeNewImage({ tempId: "a" });
 			const b = makeNewImage({ tempId: "b" });
-			const { result } = await renderCore([a, b]);
+			const { result, act } = await renderCore([a, b]);
 			await act(async () => {
 				await result.current.handlers.handleMove("a", "down");
 			});
@@ -394,7 +401,10 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			let call = 0;
 			const processFile = vi.fn(async (_f: File) => deferreds[call++].promise);
 
-			const { result } = await renderCore([], { maxImages: 1, processFile });
+			const { result, act } = await renderCore([], {
+				maxImages: 1,
+				processFile,
+			});
 
 			const fileA = new File(["a"], "a.jpg", { type: "image/jpeg" });
 			const fileB = new File(["b"], "b.jpg", { type: "image/jpeg" });
@@ -417,7 +427,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			let call = 0;
 			const processFile = vi.fn(async (_f: File) => deferreds[call++].promise);
 
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 
 			const fileA = new File(["a"], "a.jpg", { type: "image/jpeg" });
 			const fileB = new File(["b"], "b.jpg", { type: "image/jpeg" });
@@ -444,7 +454,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 			const a = makeExistingImage({ tempId: "temp_A" });
 			const b = makeExistingImage({ tempId: "temp_B" });
-			const { result } = await renderCore([a, b], { processFile });
+			const { result, act } = await renderCore([a, b], { processFile });
 
 			const newFile = new File(["x"], "x.jpg", { type: "image/jpeg" });
 
@@ -467,7 +477,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const processFile = vi.fn(async (_f: File) => d.promise);
 
 			const a = makeExistingImage({ tempId: "temp_A" });
-			const { result } = await renderCore([a], { processFile });
+			const { result, act } = await renderCore([a], { processFile });
 
 			const file = new File(["n"], "n.jpg", { type: "image/jpeg" });
 
@@ -542,7 +552,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const converted = [webp("file1.webp"), webp("file2.webp")];
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++].promise);
-			const { result } = await renderCore(initial, { processFile });
+			const { result, act } = await renderCore(initial, { processFile });
 
 			const results: boolean[] = [];
 			await act(async () => {
@@ -645,7 +655,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const conversions = [createDeferred<File>(), createDeferred<File>()];
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++].promise);
-			const { result } = await renderCore([], { processFile, uploadFile });
+			const { result, act } = await renderCore([], { processFile, uploadFile });
 
 			await act(async () => {
 				const adding = result.current.handlers.handleAdd(jpeg("origin.jpg"));
@@ -685,7 +695,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++]);
 			const onError = vi.fn();
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[makeNewImage({ tempId: "temp_new" })],
 				{ processFile, onError },
 			);
@@ -724,7 +734,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++]);
 			const onError = vi.fn();
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[makeNewImage({ tempId: "temp_new" })],
 				{ processFile, onError },
 			);
@@ -755,7 +765,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("unmount 後に解決した差し替えは書き戻されないこと", async () => {
 			const converted = createDeferred<File>();
-			const { result, ref, unmount } = await renderCore(
+			const { result, ref, unmount, act } = await renderCore(
 				[makeNewImage({ tempId: "temp_new" })],
 				{ processFile: () => converted.promise },
 			);
@@ -788,7 +798,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 			const first = await mount();
 			let changing!: Promise<boolean>;
-			await act(async () => {
+			await first.act(async () => {
 				changing = first.result.current.handlers.handleFileChange(
 					"temp_new",
 					jpeg("file1.jpg"),
@@ -797,11 +807,11 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			await first.unmount();
 
 			const second = await mount();
-			await act(async () => {
+			await second.act(async () => {
 				await second.result.current.handlers.handleAdd(jpeg("added.jpg"));
 			});
 
-			await act(async () => {
+			await second.act(async () => {
 				resolveFirstConversion(webp("file1.webp"));
 				await changing;
 			});
@@ -817,17 +827,17 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 			const first = await mount();
 			let adding!: Promise<boolean>;
-			await act(async () => {
+			await first.act(async () => {
 				adding = first.result.current.handlers.handleAdd(jpeg("file1.jpg"));
 			});
 			await first.unmount();
 
 			const second = await mount();
-			await act(async () => {
+			await second.act(async () => {
 				await second.result.current.handlers.handleAdd(jpeg("added.jpg"));
 			});
 
-			await act(async () => {
+			await second.act(async () => {
 				resolveFirstConversion(webp("file1.webp"));
 				await adding;
 			});
@@ -839,7 +849,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("unmount で走行中の wait が解放されること", async () => {
 			// 変換が返らないまま画面を離れるケース。待ち続けると保存が永久に返らない
-			const { result, unmount } = await renderCore([], {
+			const { result, unmount, act } = await renderCore([], {
 				processFile: () => new Promise<File>(() => {}),
 			});
 
@@ -858,7 +868,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("New: 変換中に削除したら解決しても項目が復活しないこと", async () => {
 			const converted = createDeferred<File>();
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[makeNewImage({ tempId: "temp_new" })],
 				{ processFile: () => converted.promise },
 			);
@@ -880,7 +890,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("Existing: 変換中に削除したら解決しても ToBeDeleted のままであること", async () => {
 			const converted = createDeferred<File>();
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[makeExistingImage({ tempId: "temp_existing" })],
 				{ processFile: () => converted.promise },
 			);
@@ -909,7 +919,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 	describe("メッセージのカスタマイズ", () => {
 		it("[messages] maxImages 到達時に messages.maxImages のカスタム文言が onError に載る", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewImage()], {
+			const { result, act } = await renderCore([makeNewImage()], {
 				maxImages: 1,
 				onError,
 				messages: {
@@ -934,7 +944,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const processFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				processFile,
 				onError,
 				messages: { processFile: () => "処理失敗（custom）" },
@@ -954,7 +964,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("[messages] 未指定時は既定の日本語文言が onError に載る", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewImage()], {
+			const { result, act } = await renderCore([makeNewImage()], {
 				maxImages: 1,
 				onError,
 			});
@@ -973,7 +983,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("[messages] キーが undefined でも既定文言にフォールバックし throw しない", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewImage()], {
+			const { result, act } = await renderCore([makeNewImage()], {
 				maxImages: 1,
 				onError,
 				messages: { maxImages: undefined },
@@ -996,7 +1006,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("adapter.validate() が reject すると onError({type:'unknown'}) が呼ばれること", async () => {
 			const onError = vi.fn();
 			const validationError = new Error("validation boom");
-			const { result, ref } = await renderCore([], { onError });
+			const { result, ref, act } = await renderCore([], { onError });
 			ref.validate?.mockRejectedValueOnce(validationError);
 
 			await act(async () => {
@@ -1016,7 +1026,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("adapter.validate() が reject しても画像は追加されていること", async () => {
 			const onError = vi.fn();
-			const { result, ref } = await renderCore([], { onError });
+			const { result, ref, act } = await renderCore([], { onError });
 			ref.validate?.mockRejectedValueOnce(new Error("boom"));
 
 			await act(async () => {
@@ -1031,7 +1041,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 	describe("存在しない tempId・重複操作の防御", () => {
 		it("handleDelete: 存在しない tempId で false を返し何もしない", async () => {
-			const { result } = await renderCore([makeNewImage({ tempId: "a" })]);
+			const { result, act } = await renderCore([makeNewImage({ tempId: "a" })]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.handleDelete("nonexistent");
@@ -1041,7 +1051,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 
 		it("handleMove: 存在しない tempId で false を返す", async () => {
-			const { result } = await renderCore([makeNewImage({ tempId: "a" })]);
+			const { result, act } = await renderCore([makeNewImage({ tempId: "a" })]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.handleMove("nonexistent", "up");
@@ -1050,7 +1060,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 
 		it("handleFileChange: 存在しない tempId で false を返す", async () => {
-			const { result } = await renderCore([makeNewImage({ tempId: "a" })]);
+			const { result, act } = await renderCore([makeNewImage({ tempId: "a" })]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.handleFileChange(
@@ -1064,7 +1074,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("handleDelete: ToBeDeleted の再削除は no-op で false を返し onError を呼ばない", async () => {
 			const onError = vi.fn();
 			const ex = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { onError });
+			const { result, act } = await renderCore([ex], { onError });
 
 			await act(async () => {
 				await result.current.handlers.handleDelete("temp_ex");
@@ -1085,7 +1095,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("handleFileChange: ToBeDeleted に対する変更は unsupported status として onError を呼ぶ", async () => {
 			const onError = vi.fn();
 			const ex = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { onError });
+			const { result, act } = await renderCore([ex], { onError });
 
 			await act(async () => {
 				await result.current.handlers.handleDelete("temp_ex");
@@ -1117,7 +1127,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				throw new Error("process boom");
 			});
 			const ex = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { processFile, onError });
+			const { result, act } = await renderCore([ex], { processFile, onError });
 
 			let ok = true;
 			await act(async () => {
@@ -1143,7 +1153,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				throw new Error("upload boom");
 			});
 			const ex = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { uploadFile, onError });
+			const { result, act } = await renderCore([ex], { uploadFile, onError });
 
 			let ok = false;
 			await act(async () => {
@@ -1171,7 +1181,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const processFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([nv], { processFile, onError });
+			const { result, act } = await renderCore([nv], { processFile, onError });
 
 			let ok = true;
 			await act(async () => {
@@ -1192,7 +1202,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([nv], { uploadFile, onError });
+			const { result, act } = await renderCore([nv], { uploadFile, onError });
 
 			let ok = false;
 			await act(async () => {
@@ -1214,7 +1224,9 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 	describe("onError 未指定時の安全性", () => {
 		it("maxImages 超過で onError 未指定でもクラッシュしない", async () => {
-			const { result } = await renderCore([makeNewImage()], { maxImages: 1 });
+			const { result, act } = await renderCore([makeNewImage()], {
+				maxImages: 1,
+			});
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.handleAdd(
@@ -1228,7 +1240,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const processFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.handleAdd(
@@ -1242,7 +1254,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 			let ok = false;
 			await act(async () => {
 				ok = await result.current.handlers.handleAdd(
@@ -1254,7 +1266,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 
 		it("validate reject で onError 未指定でもクラッシュしない", async () => {
-			const { result, ref } = await renderCore([]);
+			const { result, ref, act } = await renderCore([]);
 			ref.validate?.mockRejectedValueOnce(new Error("boom"));
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1266,7 +1278,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("unsupported status で onError 未指定でもクラッシュしない", async () => {
 			const ex = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex]);
+			const { result, act } = await renderCore([ex]);
 
 			await act(async () => {
 				await result.current.handlers.handleDelete("temp_ex");
@@ -1288,7 +1300,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => ({
 				uploadRef: "https://s3.example.com/uploaded.jpg",
 			}));
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 			await act(async () => {
 				await result.current.handlers.handleAdd(
 					new File(["d"], "a.jpg", { type: "image/jpeg" }),
@@ -1300,7 +1312,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 
 		it("uploadFile 未指定時は uploadRef が undefined のままであること", async () => {
-			const { result } = await renderCore([]);
+			const { result, act } = await renderCore([]);
 			await act(async () => {
 				await result.current.handlers.handleAdd(
 					new File(["d"], "a.jpg", { type: "image/jpeg" }),
@@ -1315,7 +1327,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("upload failed");
 			});
-			const { result } = await renderCore([], { uploadFile, onError });
+			const { result, act } = await renderCore([], { uploadFile, onError });
 			let ok = false;
 			await act(async () => {
 				ok = await result.current.handlers.handleAdd(
@@ -1341,7 +1353,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				callOrder.push("uploadFile");
 				return { uploadRef: "https://s3.example.com/uploaded.jpg" };
 			});
-			const { result } = await renderCore([], { processFile, uploadFile });
+			const { result, act } = await renderCore([], { processFile, uploadFile });
 			await act(async () => {
 				await result.current.handlers.handleAdd(
 					new File(["d"], "a.jpg", { type: "image/jpeg" }),
@@ -1355,7 +1367,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				uploadRef: "https://s3.example.com/changed.jpg",
 			}));
 			const existing = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([existing], { uploadFile });
+			const { result, act } = await renderCore([existing], { uploadFile });
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
 					"temp_ex",
@@ -1374,7 +1386,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				uploadFile,
 				onError,
 				messages: { uploadFile: () => "アップロード失敗（custom）" },
@@ -1410,7 +1422,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("転送の完了を待たずに項目が追加され、pending が公開されること", async () => {
 			const { uploadFile } = queuedUpload(1);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1425,7 +1437,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("転送中にファイルを差し替えると古い転送結果は反映されないこと", async () => {
 			const { uploadFile, deferreds } = queuedUpload(2);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1459,7 +1471,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("転送中に項目を削除すると結果は反映されず onError も呼ばれないこと", async () => {
 			const onError = vi.fn();
 			const { uploadFile, deferreds } = queuedUpload(1);
-			const { result } = await renderCore([], { uploadFile, onError });
+			const { result, act } = await renderCore([], { uploadFile, onError });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1483,7 +1495,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("複数項目の並行転送がそれぞれ正しい項目へ書き戻されること", async () => {
 			const { uploadFile, deferreds } = queuedUpload(2);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1518,7 +1530,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => ({
 				uploadRef: url("processed.jpg"),
 			}));
-			const { result } = await renderCore([], { processFile, uploadFile });
+			const { result, act } = await renderCore([], { processFile, uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1536,7 +1548,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		const url = (name: string) => `https://s3.example.com/${name}`;
 
 		it("uploads.wait: uploadFile 未設定なら常に ok を返すこと", async () => {
-			const { result } = await renderCore([]);
+			const { result, act } = await renderCore([]);
 			await act(async () => {
 				await result.current.handlers.handleAdd(
 					new File(["a"], "a.jpg", { type: "image/jpeg" }),
@@ -1559,7 +1571,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("uploads.wait: 転送完了まで待ち、uploadRef 込みの images を返すこと", async () => {
 			const deferred = createDeferred<UploadFileResult>();
 			const uploadFile = vi.fn(async () => deferred.promise);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1589,7 +1601,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			];
 			let call = 0;
 			const uploadFile = vi.fn(async () => deferreds[call++].promise);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1621,7 +1633,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1644,7 +1656,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				uploadRef: url("healed.jpg"),
 			}));
 			const orphan = makeNewImage({ tempId: "temp_orphan" });
-			const { result } = await renderCore([orphan], { uploadFile });
+			const { result, act } = await renderCore([orphan], { uploadFile });
 
 			let waitResult: unknown = null;
 			await act(async () => {
@@ -1661,7 +1673,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async (file: File) => ({
 				uploadRef: url(file.name),
 			}));
-			const { result, ref } = await renderCore([], { uploadFile });
+			const { result, ref, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1696,7 +1708,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const deferred = createDeferred<UploadFileResult>();
 			const uploadFile = vi.fn(async () => deferred.promise);
 			const existing = makeExistingImage();
-			const { result } = await renderCore([existing], { uploadFile });
+			const { result, act } = await renderCore([existing], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1740,7 +1752,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -1769,7 +1781,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const deferred = createDeferred<UploadFileResult>();
 			const uploadFile = vi.fn(async () => deferred.promise);
 			const existing = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([existing], { uploadFile });
+			const { result, act } = await renderCore([existing], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
@@ -1802,7 +1814,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const deferred = createDeferred<UploadFileResult>();
 			const uploadFile = vi.fn(async () => deferred.promise);
 			const existing = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([existing], { uploadFile });
+			const { result, act } = await renderCore([existing], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
@@ -1835,7 +1847,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			let call = 0;
 			const uploadFile = vi.fn(async () => deferreds[call++].promise);
 			const existing = makeExistingImage({ tempId: "temp_ex" });
-			const { result } = await renderCore([existing], { uploadFile });
+			const { result, act } = await renderCore([existing], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
@@ -1871,7 +1883,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => deferreds[call++].promise);
 			const first = makeExistingImage({ tempId: "temp_ex1", id: "id-1" });
 			const second = makeExistingImage({ tempId: "temp_ex2", id: "id-2" });
-			const { result } = await renderCore([first, second], { uploadFile });
+			const { result, act } = await renderCore([first, second], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
@@ -1915,7 +1927,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const deferred = createDeferred<UploadFileResult>();
 			const uploadFile = vi.fn(async () => deferred.promise);
 			const existing = makeExistingImage({ tempId: "temp_ex", id: "id-ex" });
-			const { result } = await renderCore([existing], { uploadFile });
+			const { result, act } = await renderCore([existing], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
@@ -1948,7 +1960,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				...makeNewImage({ tempId: "temp_new" }),
 				replacesTempId: "temp_missing",
 			};
-			const { result } = await renderCore([orphanLink], { uploadFile });
+			const { result, act } = await renderCore([orphanLink], { uploadFile });
 
 			let waitResult: unknown = null;
 			await act(async () => {
@@ -1974,7 +1986,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				throw new Error("boom");
 			});
 			const existing = makeExistingImage({ tempId: "temp_ex", id: "id-ex" });
-			const { result } = await renderCore([existing], { uploadFile });
+			const { result, act } = await renderCore([existing], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleFileChange(
@@ -2008,7 +2020,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				...makeNewImage({ tempId: "temp_new" }),
 				replacesTempId: "temp_ex",
 			};
-			const { result } = await renderCore([replacement, deleted], {
+			const { result, act } = await renderCore([replacement, deleted], {
 				uploadFile,
 			});
 
@@ -2029,7 +2041,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		});
 
 		it("uploads.getReady(): uploadFile 未設定なら何も除外しないこと", async () => {
-			const { result } = await renderCore([]);
+			const { result, act } = await renderCore([]);
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2057,7 +2069,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("retry: pending 中は受け付けず false を返すこと", async () => {
 			const deferred = createDeferred<UploadFileResult>();
 			const uploadFile = vi.fn(async () => deferred.promise);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2086,7 +2098,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				if (shouldFail) throw new Error("boom");
 				return { uploadRef: url("recovered.jpg") };
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2119,7 +2131,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				if (failNext) throw new Error("boom");
 				return slow.promise;
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			// 1 本目: 待機を維持する役
 			await act(async () => {
@@ -2169,7 +2181,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2189,7 +2201,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("retry: 不明な tempId では false を返すこと", async () => {
 			const uploadFile = vi.fn(async () => ({ uploadRef: url("a.jpg") }));
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			let retried = true;
 			await act(async () => {
@@ -2207,7 +2219,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				if (shouldFail) throw new Error("boom");
 				return deferred.promise;
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2238,7 +2250,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2279,7 +2291,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("ファイル差し替えで旧転送が中断され、新転送は生きていること", async () => {
 			const { uploadFile, signals } = signalCapturingUpload(2);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2301,7 +2313,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("項目の削除で転送が中断されること", async () => {
 			const { uploadFile, signals } = signalCapturingUpload(1);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2321,7 +2333,9 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			// unmount 後の書き戻しを許すと、フォームを共有する remount 後の
 			// インスタンスへ古い URL が紛れ込む
 			const { uploadFile, signals, deferreds } = signalCapturingUpload(1);
-			const { result, ref, unmount } = await renderCore([], { uploadFile });
+			const { result, ref, unmount, act } = await renderCore([], {
+				uploadFile,
+			});
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2350,7 +2364,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			// 毎周 startUpload を呼んで uploads.wait が返らなくなる
 			const uploadFile = vi.fn(async () => ({}) as unknown as UploadFileResult);
 			const onError = vi.fn();
-			const { result } = await renderCore([], { uploadFile, onError });
+			const { result, act } = await renderCore([], { uploadFile, onError });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2375,7 +2389,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("空文字の uploadRef も失敗として扱うこと", async () => {
 			const uploadFile = vi.fn(async () => ({ uploadRef: "" }));
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2403,7 +2417,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("報告した値が uploadState に出ること", async () => {
 			const { uploadFile, captured, deferred } = progressCapturingUpload();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2429,7 +2443,9 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("整数パーセントが変わらない報告では再レンダーしないこと", async () => {
 			// チャンクごとに台帳へ書くと転送 1 本で数百回の再レンダーになる
 			const { uploadFile, captured, deferred } = progressCapturingUpload();
-			const { result, getRenderCount } = await renderCore([], { uploadFile });
+			const { result, getRenderCount, act } = await renderCore([], {
+				uploadFile,
+			});
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2462,7 +2478,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("非有限の報告は弾き、範囲外はクランプすること", async () => {
 			const { uploadFile, captured, deferred } = progressCapturingUpload();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2494,7 +2510,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("転送が終わると進捗も消えること", async () => {
 			const { uploadFile, captured, deferred } = progressCapturingUpload();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2521,7 +2537,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			// ImageFieldAdapter は setImages の同期反映を契約していないため、
 			// 書き戻し直後のフォーム state に uploadRef が乗っていない実装がありうる
 			const uploadFile = vi.fn(async () => ({ uploadRef: url("late.jpg") }));
-			const { result, ref } = await renderCore([], { uploadFile });
+			const { result, ref, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2565,7 +2581,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			}));
 			// 並べ替えで実際に setImages を起こすため 2 件で始める。単一項目への
 			// handleMove は moved: false で setImages に到達せず、再レンダーが起きない
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[
 					makeNewImage({ tempId: "temp_clone" }),
 					makeExistingImage({ tempId: "temp_keep" }),
@@ -2600,7 +2616,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			];
 			let call = 0;
 			const uploadFile = vi.fn(async () => deferreds[call++].promise);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -2638,7 +2654,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => ({
 				uploadRef: "https://s3.example.com/never-lands.jpg",
 			}));
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[makeNewImage({ tempId: "temp_clone" })],
 				{ uploadFile, cloneOnRead: true },
 			);
@@ -2671,7 +2687,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("processFile 無しでも、項目になるまで待つこと", async () => {
 			const uploadFile = vi.fn(async () => ({ uploadRef: url("a.jpg") }));
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			let waitResult: unknown = null;
 			await act(async () => {
@@ -2690,7 +2706,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 		it("変換の解決前に settle せず、解決後に当該画像を含む ok を返すこと", async () => {
 			const converted = createDeferred<File>();
 			const uploadFile = vi.fn(async () => ({ uploadRef: url("a.webp") }));
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				processFile: () => converted.promise,
 				uploadFile,
 			});
@@ -2719,7 +2735,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const converted = createDeferred<File>();
 			const uploaded = createDeferred<UploadFileResult>();
 			const uploadFile = vi.fn(async () => uploaded.promise);
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				processFile: () => converted.promise,
 				uploadFile,
 			});
@@ -2747,7 +2763,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("uploadFile 未設定の構成でも変換を待つこと", async () => {
 			const converted = createDeferred<File>();
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				processFile: () => converted.promise,
 			});
 
@@ -2780,7 +2796,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			];
 			let uploadCall = 0;
 			const uploadFile = vi.fn(async () => uploaded[uploadCall++].promise);
-			const { result } = await renderCore([], { processFile, uploadFile });
+			const { result, act } = await renderCore([], { processFile, uploadFile });
 
 			let waitResult: unknown = null;
 			await act(async () => {
@@ -2813,7 +2829,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const conversions = [createDeferred<File>(), createDeferred<File>()];
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++].promise);
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 
 			await act(async () => {
 				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
@@ -2836,7 +2852,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 
 		it("handler が reject しても wait() は reject しないこと", async () => {
 			const converted = createDeferred<File>();
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				processFile: () => converted.promise,
 				throwOnSetImages: true,
 			});
@@ -2863,7 +2879,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			];
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++].promise);
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 
 			await act(async () => {
 				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
@@ -2896,7 +2912,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			];
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++].promise);
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 
 			await act(async () => {
 				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
@@ -2925,7 +2941,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const conversions = [createDeferred<File>(), createDeferred<File>()];
 			let call = 0;
 			const processFile = vi.fn(() => conversions[call++].promise);
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 
 			await act(async () => {
 				const adding = result.current.handlers.handleAdd(jpeg("a.jpg"));
@@ -2995,7 +3011,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			// 現行の掃除が effect の cleanup にあるため、範囲を誤ると StrictMode でだけ
 			// 差し替えが commit されなくなる
 			const converted = createDeferred<File>();
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[makeNewImage({ tempId: "temp_new" })],
 				{ processFile: () => converted.promise, wrapper: StrictMode },
 			);
@@ -3022,7 +3038,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 				throw new Error("sync boom");
 			});
 			const onError = vi.fn();
-			const { result } = await renderCore([], { uploadFile, onError });
+			const { result, act } = await renderCore([], { uploadFile, onError });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -3045,7 +3061,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 					uploadRef: "https://s3.example.com/recovered.jpg",
 				});
 			});
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.handleAdd(
@@ -3074,7 +3090,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			const uploadFile = vi.fn(async () => ({
 				uploadRef: "https://s3.example.com/late.jpg",
 			}));
-			const { result, ref } = await renderCore([], { uploadFile });
+			const { result, ref, act } = await renderCore([], { uploadFile });
 			expect(uploadFile).not.toHaveBeenCalled();
 
 			await act(async () => {
@@ -3095,7 +3111,7 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			});
 			// 並べ替えで実際に setImages を起こすため 2 件で始める。単一項目への
 			// handleMove は moved: false で setImages に到達せず、再レンダーが起きない
-			const { result } = await renderCore(
+			const { result, act } = await renderCore(
 				[
 					makeNewImage({ tempId: "temp_f" }),
 					makeExistingImage({ tempId: "temp_keep" }),
@@ -3148,9 +3164,8 @@ describe("useMultiImageCore (FakeImageFieldAdapter)", () => {
 			expect(uploadFile).not.toHaveBeenCalled();
 
 			options.uploadFile = uploadFile;
-			await act(async () => {
-				await rerender();
-			});
+			// rerender は内部で act 済みなので二重に包まない
+			await rerender();
 
 			await vi.waitFor(() => expect(uploadFile).toHaveBeenCalledOnce());
 			await vi.waitFor(() =>

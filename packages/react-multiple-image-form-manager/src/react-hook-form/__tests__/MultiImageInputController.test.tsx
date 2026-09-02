@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { act } from "react";
 import { useForm } from "react-hook-form";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -92,28 +91,29 @@ describe("MultiImageInputController (render-props component)", () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<HarnessHost handleRef={handleRef} />);
 
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
 
-		expect(handleRef.current?.items).toHaveLength(1);
-		expect(handleRef.current?.items[0]?.image.status).toBe(ImageFormStatus.New);
+		await vi.waitFor(() => {
+			expect(handleRef.current?.items).toHaveLength(1);
+			expect(handleRef.current?.items[0]?.image.status).toBe(
+				ImageFormStatus.New,
+			);
+		});
 	});
 
 	it("handleDelete removes a new image", async () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<HarnessHost handleRef={handleRef} />);
 
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
+		await vi.waitFor(() =>
+			expect(handleRef.current?.raw.watchedImages).toHaveLength(1),
+		);
 		const tempId = handleRef.current?.raw.watchedImages[0]?.tempId ?? "";
 
-		await act(async () => {
-			await handleRef.current?.handleDelete(tempId);
-		});
+		await handleRef.current?.handleDelete(tempId);
 
-		expect(handleRef.current?.items).toHaveLength(0);
+		await vi.waitFor(() => expect(handleRef.current?.items).toHaveLength(0));
 	});
 
 	it("handleFileChange replaces existing image (New + ToBeDeleted pair)", async () => {
@@ -125,34 +125,35 @@ describe("MultiImageInputController (render-props component)", () => {
 			/>,
 		);
 
-		await act(async () => {
-			await handleRef.current?.handleFileChange("temp_a", makeFile("new.jpg"));
-		});
+		await handleRef.current?.handleFileChange("temp_a", makeFile("new.jpg"));
 
-		const raw = handleRef.current?.raw.watchedImages ?? [];
-		expect(raw.map((i) => i.status)).toEqual([
-			ImageFormStatus.New,
-			ImageFormStatus.ToBeDeleted,
-		]);
-		// items filters out ToBeDeleted
-		expect(handleRef.current?.items).toHaveLength(1);
+		await vi.waitFor(() => {
+			const raw = handleRef.current?.raw.watchedImages ?? [];
+			expect(raw.map((i) => i.status)).toEqual([
+				ImageFormStatus.New,
+				ImageFormStatus.ToBeDeleted,
+			]);
+			// items filters out ToBeDeleted
+			expect(handleRef.current?.items).toHaveLength(1);
+		});
 	});
 
 	it("handleMove swaps items", async () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<HarnessHost handleRef={handleRef} />);
 
-		await act(async () => {
-			await handleRef.current?.handleAdd(makeFile("a.jpg"));
-			await handleRef.current?.handleAdd(makeFile("b.jpg"));
-		});
+		await handleRef.current?.handleAdd(makeFile("a.jpg"));
+		await handleRef.current?.handleAdd(makeFile("b.jpg"));
+		await vi.waitFor(() =>
+			expect(handleRef.current?.raw.watchedImages).toHaveLength(2),
+		);
 
 		const firstTempId = handleRef.current?.raw.watchedImages[0]?.tempId ?? "";
-		await act(async () => {
-			await handleRef.current?.handleMove(firstTempId, "down");
-		});
+		await handleRef.current?.handleMove(firstTempId, "down");
 
-		expect(handleRef.current?.raw.watchedImages[1]?.tempId).toBe(firstTempId);
+		await vi.waitFor(() =>
+			expect(handleRef.current?.raw.watchedImages[1]?.tempId).toBe(firstTempId),
+		);
 	});
 
 	it("render prop receives all expected properties", async () => {
