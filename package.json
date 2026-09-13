@@ -2,7 +2,7 @@
 	"name": "rhf-multiple-image-form-manager-workspace",
 	"private": true,
 	"type": "module",
-	"packageManager": "pnpm@11.8.0",
+	"packageManager": "pnpm@11.11.0",
 	"scripts": {
 		"build": "pnpm --filter @curry-battle/react-multiple-image-form-manager run build",
 		"test": "pnpm --filter @curry-battle/react-multiple-image-form-manager run test",
