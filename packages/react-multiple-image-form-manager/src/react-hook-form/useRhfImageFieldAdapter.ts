@@ -1,7 +1,6 @@
 import { useMemo, useRef } from "react";
 import type {
 	ArrayPath,
-	FieldArray,
 	FieldValues,
 	Path,
 	UseFormReturn,
@@ -23,10 +22,9 @@ function asPath<TForm extends FieldValues>(fieldName: string): Path<TForm> {
 	return fieldName as unknown as Path<TForm>;
 }
 
-function asFieldArrayItems<TForm extends FieldValues>(
-	images: Image[],
-): FieldArray<TForm, ArrayPath<TForm>>[] {
-	return images as FieldArray<TForm, ArrayPath<TForm>>[];
+// biome-ignore lint/suspicious/noExplicitAny: react-hook-form v7.80+ exports FieldArray as a component, shadowing the internal type alias. Direct type import is no longer possible, so we cast through `any`.
+function asFieldArrayItems(images: Image[]): any[] {
+	return images;
 }
 
 function asImages(watched: unknown): Image[] {
@@ -76,7 +74,7 @@ export function useRhfImageFieldAdapter<
 			return imagesRef.current;
 		},
 		setImages(next: Image[]) {
-			replace(asFieldArrayItems<TForm>(next));
+			replace(asFieldArrayItems(next));
 			imagesRef.current = next;
 		},
 		async validate() {
