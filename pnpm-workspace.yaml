@@ -14,7 +14,9 @@ minimumReleaseAgeExclude:
     # Renovate security update: pnpm@11.5.3 || 11.8.0 || 11.11.0
     pnpm@11.5.3 || 11.8.0 || 11.11.0,
     # Renovate security update: vitest@4.1.11
-    vitest@4.1.11
+    vitest@4.1.11,
+    # Renovate security update: vite@8.1.6
+    vite@8.1.6
   ]
 
 blockExoticSubdeps: true
