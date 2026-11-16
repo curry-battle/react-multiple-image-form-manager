@@ -1,63 +1,61 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   extends: [
-    "config:recommended",
-    "helpers:pinGitHubActionDigests",
+    'config:recommended',
+    'helpers:pinGitHubActionDigests',
   ],
-
-  // config:recommended includes **/examples/** in ignorePaths;
-  // override to let Renovate track example app dependencies.
   ignorePaths: [
-    "**/node_modules/**",
-    "**/bower_components/**",
-    "**/vendor/**",
-    "**/__tests__/**",
-    "**/test/**",
-    "**/fixtures/**",
-    "**/__fixtures__/**",
+    '**/node_modules/**',
+    '**/bower_components/**',
+    '**/vendor/**',
+    '**/__tests__/**',
+    '**/test/**',
+    '**/fixtures/**',
+    '**/__fixtures__/**',
   ],
-
-  mode: "full",
-  dependencyDashboard: true,
+  mode: 'full',
+  dependencyDashboard: {
+    enabled: true,
+  },
   configMigration: true,
-
-  semanticCommits: "enabled",
-  semanticCommitType: "chore",
-  semanticCommitScope: "deps",
-
-  minimumReleaseAge: "7 days",
-  internalChecksFilter: "strict",
-
-  rangeStrategy: "pin",
-
+  semanticCommits: 'enabled',
+  semanticCommitType: 'chore',
+  semanticCommitScope: 'deps',
+  minimumReleaseAge: '7 days',
+  internalChecksFilter: 'strict',
+  rangeStrategy: 'pin',
   prConcurrentLimit: 5,
   prHourlyLimit: 2,
-
   automerge: false,
-
   packageRules: [
-{
-      description: "Pin @types/node to match runtime Node major (24)",
-      matchPackageNames: ["@types/node"],
-      allowedVersions: "<25",
+    {
+      description: 'Pin @types/node to match runtime Node major (24)',
+      matchPackageNames: [
+        '@types/node',
+      ],
+      allowedVersions: '<25',
     },
     {
-      description: "GitHub Actions must stay SHA-pinned",
-      matchManagers: ["github-actions"],
+      description: 'GitHub Actions must stay SHA-pinned',
+      matchManagers: [
+        'github-actions',
+      ],
       pinDigests: true,
     },
     {
-      description: "peerDependencies use ranges for consumer compatibility",
-      matchDepTypes: ["peerDependencies"],
-      rangeStrategy: "widen",
+      description: 'peerDependencies use ranges for consumer compatibility',
+      matchDepTypes: [
+        'peerDependencies',
+      ],
+      rangeStrategy: 'widen',
     },
   ],
-
   vulnerabilityAlerts: {
     enabled: true,
-    minimumReleaseAge: "0 days",
-    labels: ["security"],
+    minimumReleaseAge: '0 days',
+    labels: [
+      'security',
+    ],
   },
   osvVulnerabilityAlerts: true,
 }
